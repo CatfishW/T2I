@@ -204,12 +204,16 @@ export default function Home() {
           },
           (update: ProgressUpdate) => {
             if (update.type === "progress") {
-              setCurrentStep(update.step || 0)
-              setTotalSteps(update.total_steps || steps)
-              setProgressValue(update.progress || 0)
+              const step = update.step || 0
+              const totalSteps = update.total_steps || steps
+              const progress = update.progress || 0
+              setCurrentStep(step)
+              setTotalSteps(totalSteps)
+              setProgressValue(Math.min(100, Math.max(0, progress))) // Clamp between 0-100
             } else if (update.type === "complete") {
               setProgressValue(100)
-              setCurrentStep(update.total_steps || steps)
+              setCurrentStep(steps) // Use the steps from state, not from update
+              setTotalSteps(steps)
             }
           }
         )

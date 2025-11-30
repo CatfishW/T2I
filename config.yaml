@@ -38,16 +38,16 @@ model:
   # This provides significant speedup after first run (compilation happens on warmup)
   # Options: "default", "reduce-overhead", "max-autotune"
   # "reduce-overhead" is recommended for best speed/compilation time balance
-  enable_torch_compile: false
+  enable_torch_compile: true
   torch_compile_mode: "reduce-overhead"
   
   # Legacy model compilation (fallback if torch.compile fails)
   # NOTE: Requires Triton to be installed (pip install triton)
-  enable_compilation: true
+  enable_compilation: false
   
   # Enable CPU offloading (saves GPU memory, SLOWER inference)
   # Disable for maximum speed - only enable if you run out of VRAM
-  enable_cpu_offload: false
+  enable_cpu_offload: true
   
   # Enable sequential CPU offloading (most memory efficient, MUCH SLOWER)
   # Disable for maximum speed - only enable if you run out of VRAM
