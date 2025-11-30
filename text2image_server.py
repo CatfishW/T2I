@@ -102,9 +102,11 @@ if torch.cuda.is_available():
         torch.cuda.memory.set_per_process_memory_fraction(1.0)
     except:
         pass
-    # Set optimal memory allocation strategy
+    # Set optimal memory allocation strategy (use new variable name)
     try:
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
+        # Use PYTORCH_ALLOC_CONF instead of deprecated PYTORCH_CUDA_ALLOC_CONF
+        if 'PYTORCH_ALLOC_CONF' not in os.environ:
+            os.environ['PYTORCH_ALLOC_CONF'] = 'max_split_size_mb:512'
     except:
         pass
 
@@ -488,7 +490,7 @@ class ServerMetrics:
     generation_times: List[float] = field(default_factory=list)
     current_queue_size: int = 0
     active_generations: int = 0
-    start_time: datetime = None
+    start_time: Optional[datetime] = field(default=None)
     
     def __post_init__(self):
         if self.start_time is None:
