@@ -101,10 +101,6 @@ fi
 echo -e "${YELLOW}Activating virtual environment...${NC}"
 source venv/bin/activate
 
-# Install/update dependencies
-echo -e "${YELLOW}Installing backend dependencies...${NC}"
-pip install --upgrade pip
-pip install -r requirements.txt
 
 # Create .env file if it doesn't exist
 if [ ! -f ".env" ]; then
