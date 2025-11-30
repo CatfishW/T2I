@@ -180,11 +180,6 @@ echo ""
 echo -e "${YELLOW}Starting Backend API Gateway...${NC}"
 cd "$BACKEND_DIR" || exit 1
 
-# Activate virtual environment if it exists
-if [ -d "venv" ]; then
-    source venv/bin/activate
-fi
-
 # Set environment variables
 export NEXT_PUBLIC_API_URL="http://localhost:${BACKEND_PORT}"
 
