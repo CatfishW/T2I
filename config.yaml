@@ -20,8 +20,8 @@ concurrency:
 # ============================================================================
 model:
   # Model name from HuggingFace
-  # name: "Tongyi-MAI/Z-Image-Turbo"
-  name: "Disty0/Z-Image-Turbo-SDNQ-uint4-svd-r32"
+  name: "Tongyi-MAI/Z-Image-Turbo"
+  # name: "Disty0/Z-Image-Turbo-SDNQ-uint4-svd-r32"
   
   # Torch dtype: "bfloat16", "float16", or "float32"
   # bfloat16 is recommended for modern GPUs
