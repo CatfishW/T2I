@@ -70,69 +70,95 @@ export function PrinterAnimation({ prompt, image, onComplete }: PrinterAnimation
                         transition={{ duration: 0.5 }}
                         className="relative z-20 flex flex-col items-center"
                     >
-                        {/* Printer Body */}
-                        <div className="relative w-96 h-64 bg-[#2a2a2a] rounded-xl shadow-2xl border-4 border-[#3d3d3d] flex flex-col overflow-hidden">
-                            {/* Top Panel (Bolts & Industrial look) */}
-                            <div className="h-4 bg-[#1a1a1a] border-b border-[#3d3d3d] flex items-center justify-between px-2">
-                                <div className="flex gap-1">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-[#555]" />
-                                    <div className="w-1.5 h-1.5 rounded-full bg-[#555]" />
-                                </div>
-                                <div className="flex gap-1">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-[#555]" />
-                                    <div className="w-1.5 h-1.5 rounded-full bg-[#555]" />
-                                </div>
-                            </div>
-
-                            {/* Main Face */}
-                            <div className="flex-1 p-4 flex flex-col gap-4 relative">
-                                {/* CRT Screen */}
-                                <div className="w-full h-32 bg-black rounded-lg border-2 border-[#4a4a4a] shadow-[inset_0_0_20px_rgba(0,0,0,1)] relative overflow-hidden p-3">
-                                    <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-10 pointer-events-none bg-[length:100%_2px,3px_100%]" />
-                                    <div className="font-mono text-green-500 text-xs leading-relaxed break-words relative z-0 opacity-90 shadow-[0_0_5px_rgba(74,222,128,0.5)]">
-                                        <span className="text-green-700 mr-2">{">"}</span>
-                                        {typedPrompt}
-                                        <motion.span
-                                            animate={{ opacity: [0, 1, 0] }}
-                                            transition={{ duration: 0.8, repeat: Infinity }}
-                                            className="inline-block w-2 h-4 bg-green-500 ml-1 align-middle"
-                                        />
+                        {/* Shake Wrapper */}
+                        <motion.div
+                            animate={isPrinting && !image ? { x: [-1, 1, -1], y: [0.5, -0.5, 0.5] } : {}}
+                            transition={{ repeat: Infinity, duration: 0.1 }}
+                            className="relative z-30"
+                        >
+                            {/* Printer Body */}
+                            <div className="relative w-96 h-64 bg-[#2a2a2a] rounded-xl shadow-2xl border-4 border-[#3d3d3d] flex flex-col overflow-hidden">
+                                {/* Top Panel (Bolts & Industrial look) */}
+                                <div className="h-4 bg-[#1a1a1a] border-b border-[#3d3d3d] flex items-center justify-between px-2">
+                                    <div className="flex gap-1">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-[#555]" />
+                                        <div className="w-1.5 h-1.5 rounded-full bg-[#555]" />
+                                    </div>
+                                    <div className="flex gap-1">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-[#555]" />
+                                        <div className="w-1.5 h-1.5 rounded-full bg-[#555]" />
                                     </div>
                                 </div>
 
-                                {/* Controls & Output Slot */}
-                                <div className="flex items-center justify-between mt-auto">
-                                    {/* Buttons/Dials */}
-                                    <div className="flex gap-3">
-                                        <div className="w-8 h-8 rounded-full bg-[#1a1a1a] border-2 border-[#3d3d3d] flex items-center justify-center shadow-inner">
-                                            <div className={`w-2 h-2 rounded-full ${isPrinting ? "bg-amber-500 animate-pulse" : "bg-green-900"}`} />
-                                        </div>
-                                        <div className="w-8 h-8 rounded-full bg-[#1a1a1a] border-2 border-[#3d3d3d] flex items-center justify-center">
-                                            <Zap className="w-4 h-4 text-yellow-600" />
+                                {/* Main Face */}
+                                <div className="flex-1 p-4 flex flex-col gap-4 relative">
+                                    {/* CRT Screen */}
+                                    <div className="w-full h-32 bg-black rounded-lg border-2 border-[#4a4a4a] shadow-[inset_0_0_20px_rgba(0,0,0,1)] relative overflow-hidden p-3 group">
+                                        <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-10 pointer-events-none bg-[length:100%_2px,3px_100%]" />
+                                        <div className="absolute inset-0 bg-green-500/5 animate-pulse pointer-events-none z-0" />
+                                        <div className="font-mono text-green-500 text-xs leading-relaxed break-words relative z-20 opacity-90 shadow-[0_0_5px_rgba(74,222,128,0.5)]">
+                                            <span className="text-green-700 mr-2">{">"}</span>
+                                            {typedPrompt}
+                                            <motion.span
+                                                animate={{ opacity: [0, 1, 0] }}
+                                                transition={{ duration: 0.8, repeat: Infinity }}
+                                                className="inline-block w-2 h-4 bg-green-500 ml-1 align-middle"
+                                            />
                                         </div>
                                     </div>
 
-                                    {/* Output Slot Label */}
-                                    <div className="text-[10px] font-mono text-[#666] uppercase tracking-widest border border-[#444] px-2 py-0.5 rounded">
-                                        Output_V2
+                                    {/* Controls & Output Slot */}
+                                    <div className="flex items-center justify-between mt-auto">
+                                        {/* Buttons/Dials */}
+                                        <div className="flex gap-3">
+                                            <div className="w-8 h-8 rounded-full bg-[#1a1a1a] border-2 border-[#3d3d3d] flex items-center justify-center shadow-inner relative overflow-hidden">
+                                                <div className={`w-2 h-2 rounded-full ${isPrinting ? "bg-amber-500 animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.8)]" : "bg-green-900"}`} />
+                                                {isPrinting && <div className="absolute inset-0 bg-amber-500/20 animate-ping" />}
+                                            </div>
+                                            <div className="w-8 h-8 rounded-full bg-[#1a1a1a] border-2 border-[#3d3d3d] flex items-center justify-center">
+                                                <Zap className={`w-4 h-4 ${isPrinting ? "text-yellow-400 animate-bounce" : "text-yellow-900"}`} />
+                                            </div>
+                                        </div>
+
+                                        {/* Output Slot Label */}
+                                        <div className="text-[10px] font-mono text-[#666] uppercase tracking-widest border border-[#444] px-2 py-0.5 rounded bg-[#111]">
+                                            Output_V2
+                                        </div>
                                     </div>
                                 </div>
+
+                                {/* Paper Slot (Bottom) */}
+                                <div className="h-3 bg-black w-3/4 mx-auto rounded-full blur-[1px] relative top-1.5 border-t border-[#333]" />
                             </div>
 
-                            {/* Paper Slot (Bottom) */}
-                            <div className="h-2 bg-black w-3/4 mx-auto rounded-full blur-[1px] relative top-1" />
-                        </div>
+                            {/* Sparks Effect */}
+                            {isPrinting && !image && (
+                                <>
+                                    <motion.div
+                                        initial={{ opacity: 1, scale: 0, x: 0, y: 0 }}
+                                        animate={{ opacity: 0, scale: 1.5, x: -50, y: -50 }}
+                                        transition={{ duration: 0.5, repeat: Infinity, repeatDelay: 0.2 }}
+                                        className="absolute -left-2 top-10 w-2 h-2 bg-yellow-400 rounded-full blur-[1px]"
+                                    />
+                                    <motion.div
+                                        initial={{ opacity: 1, scale: 0, x: 0, y: 0 }}
+                                        animate={{ opacity: 0, scale: 1.5, x: 50, y: -30 }}
+                                        transition={{ duration: 0.4, repeat: Infinity, repeatDelay: 0.3 }}
+                                        className="absolute -right-2 top-20 w-1.5 h-1.5 bg-orange-400 rounded-full blur-[1px]"
+                                    />
+                                </>
+                            )}
+                        </motion.div>
 
                         {/* The Printed Image (Sliding Out) */}
                         <AnimatePresence>
                             {isPrinting && image && !showFinal && (
                                 <motion.div
-                                    initial={{ y: -200, scale: 0.9, opacity: 0, zIndex: 10 }}
-                                    animate={{ y: 60, scale: 1, opacity: 1 }}
-                                    exit={{ opacity: 0 }} // Fades out when showFinal becomes true
+                                    initial={{ y: -220, opacity: 0 }}
+                                    animate={{ y: -20, opacity: 1 }}
+                                    exit={{ opacity: 0 }}
                                     transition={{ duration: 2, ease: "linear" }}
-                                    className="absolute top-[100%] w-64 h-64 bg-white p-2 shadow-xl border border-gray-200"
-                                    style={{ marginTop: "-20px" }} // Start tucked in
+                                    className="absolute top-[100%] w-64 h-64 bg-white p-2 shadow-xl border border-gray-200 z-10"
                                 >
                                     <div className="w-full h-full overflow-hidden bg-gray-100 relative">
                                         {/* Scanning Line */}

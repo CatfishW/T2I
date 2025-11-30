@@ -107,7 +107,8 @@ export default function Home() {
     setCurrentImage(null)
     setProgressValue(0)
     setCurrentStep(0)
-    setTotalSteps(request.num_inference_steps || steps)
+    // Update prompt state for animation
+    setPrompt(request.prompt)
 
     try {
       const startTime = Date.now()
@@ -293,7 +294,7 @@ export default function Home() {
                         <span>{preset.label}</span>
 
                         {/* Tooltip Hint */}
-                        <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-popover text-popover-foreground text-[10px] px-2 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
+                        <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-popover text-popover-foreground text-[10px] px-2 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-[100]">
                           {preset.hint}
                           <div className="absolute bottom-[-4px] left-1/2 -translate-x-1/2 border-4 border-transparent border-t-popover" />
                         </div>
