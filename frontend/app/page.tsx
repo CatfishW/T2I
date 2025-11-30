@@ -240,9 +240,24 @@ export default function Home() {
         }
       }
 
+      // Validate image_base64 format
+      let imageBase64 = response.image_base64
+      if (!imageBase64) {
+        throw new Error("No image data received from server")
+      }
+      // Ensure it's a valid data URI
+      if (!imageBase64.startsWith("data:image/")) {
+        // If it's just base64, add the data URI prefix
+        if (imageBase64 && !imageBase64.includes(",")) {
+          imageBase64 = `data:image/png;base64,${imageBase64}`
+        } else {
+          console.warn("Image data format may be invalid:", imageBase64.substring(0, 50))
+        }
+      }
+
       const generatedImage: GeneratedImage = {
         id: response.image_id || `img-${Date.now()}`,
-        imageBase64: response.image_base64,
+        imageBase64: imageBase64,
         prompt,
         negativePrompt,
         seed: response.seed,
@@ -596,6 +611,13 @@ export default function Home() {
                           initial={{ opacity: 0, scale: 0.9 }}
                           animate={{ opacity: 1, scale: 1 }}
                           transition={{ duration: 0.5, delay: 0.2 }}
+                          onError={(e) => {
+                            console.error("Image load error:", e)
+                            toast.error("Failed to load image. The image data may be corrupted.")
+                          }}
+                          onLoad={() => {
+                            console.log("Image loaded successfully")
+                          }}
                         />
                         <motion.div
                           className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -804,6 +826,9 @@ export default function Home() {
                                 className="w-full h-full object-cover"
                                 whileHover={{ scale: 1.1 }}
                                 transition={{ duration: 0.3 }}
+                                onError={(e) => {
+                                  console.error("Gallery image load error:", e)
+                                }}
                               />
                               <motion.div
                                 className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center"
@@ -1056,6 +1081,10 @@ export default function Home() {
                     src={selectedImage.imageBase64}
                     alt={selectedImage.prompt}
                     className="w-full h-auto"
+                    onError={(e) => {
+                      console.error("Dialog image load error:", e)
+                      toast.error("Failed to load image in dialog")
+                    }}
                   />
                 </motion.div>
                 <div className="space-y-2">

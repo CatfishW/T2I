@@ -338,7 +338,12 @@ async def generate_image_stream(request: GenerateRequest):
                         "guidance_scale": request.guidance_scale,
                     },
                 ) as response:
-                    if response.status_code != 200:
+                    if response.status_code == 404:
+                        # Endpoint not found - provide helpful error message
+                        error_message = f"Endpoint /generate-stream not found on text-to-image server. The server may need to be restarted to load this endpoint."
+                        yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
+                        return
+                    elif response.status_code != 200:
                         # Try to read error message from response
                         error_message = f"Upstream server returned status {response.status_code}"
                         try:
