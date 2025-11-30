@@ -181,6 +181,7 @@ echo -e "${YELLOW}Starting Backend API Gateway...${NC}"
 cd "$BACKEND_DIR" || exit 1
 
 # Set environment variables
+export BACKEND_PORT=${BACKEND_PORT}
 export NEXT_PUBLIC_API_URL="http://localhost:${BACKEND_PORT}"
 
 # Start backend in background

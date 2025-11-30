@@ -15,11 +15,11 @@ from pydantic import BaseModel, Field
 
 # URL of the text-to-image server (the machine hosting the model)
 # Note: If running both gateway and server on same machine, use different ports:
-# - Gateway: port 8000 (default)
-# - Server: port 8001 (run with: python text2image_server.py --port 8001)
+# - Gateway: port 21115 (default)
+# - Server: port 8010 (run with: python text2image_server.py --port 8010)
 TEXT2IMAGE_SERVER_URL = os.getenv(
     "TEXT2IMAGE_SERVER_URL",
-    "http://localhost:8001"  # Default port 8001, matching documentation
+    "http://localhost:8010"  # Default port 8010, matching start-production.sh
 )
 
 # Request timeout in seconds
@@ -37,6 +37,9 @@ http_client: Optional[httpx.AsyncClient] = None
 async def lifespan(app: FastAPI):
     """Initialize and cleanup HTTP client"""
     global http_client
+    
+    # Get port from environment or use default
+    backend_port = int(os.getenv("BACKEND_PORT", "21115"))
     
     # Startup
     print("=" * 60)
@@ -70,7 +73,7 @@ async def lifespan(app: FastAPI):
         print(f"⚠ Warning: Could not connect to text-to-image server: {e}")
         print(f"  Make sure {TEXT2IMAGE_SERVER_URL} is running")
     
-    print("\nServer ready! Listening on http://0.0.0.0:8000")
+    print(f"\nServer ready! Listening on http://0.0.0.0:{backend_port}")
     print("=" * 60 + "\n")
     
     yield
@@ -292,4 +295,6 @@ async def get_metrics():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=21115)
+    # Get port from environment variable, default to 21115 (matching start-production.sh)
+    backend_port = int(os.getenv("BACKEND_PORT", "21115"))
+    uvicorn.run(app, host="0.0.0.0", port=backend_port)
