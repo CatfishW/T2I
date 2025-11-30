@@ -37,7 +37,7 @@ export function Navbar({ activeTab, onTabChange, apiHealth }: NavbarProps) {
 
   return (
     <motion.nav
-      className="sticky top-0 z-50 w-full border-b-2 border-primary/20 bg-background/95 backdrop-blur-md supports-[backdrop-filter]:bg-background/80 shadow-sm"
+      className="sticky top-0 z-50 w-full glass border-b border-white/10"
       initial={{ y: -100 }}
       animate={{ y: 0 }}
       transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
@@ -119,9 +119,8 @@ export function Navbar({ activeTab, onTabChange, apiHealth }: NavbarProps) {
                   >
                     <Button
                       variant={isActive ? "default" : "ghost"}
-                      className={`relative px-4 py-2 gap-2 font-medium ${
-                        isDisabled ? "opacity-50 cursor-not-allowed" : ""
-                      }`}
+                      className={`relative px-4 py-2 gap-2 font-medium ${isDisabled ? "opacity-50 cursor-not-allowed" : ""
+                        }`}
                       onClick={() => !isDisabled && onTabChange(tab.id)}
                       disabled={isDisabled}
                     >
