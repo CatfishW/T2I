@@ -339,12 +339,33 @@ async def generate_image_stream(request: GenerateRequest):
                     },
                 ) as response:
                     if response.status_code != 200:
-                        error_detail = await response.aread()
+                        # Try to read error message from response
+                        error_message = f"Upstream server returned status {response.status_code}"
                         try:
-                            error_json = json.loads(error_detail)
-                            error_message = error_json.get("detail", "Unknown error")
-                        except:
-                            error_message = error_detail.decode("utf-8", errors="ignore")
+                            # Try to read as text first (for SSE error messages)
+                            async for chunk in response.aiter_text():
+                                if chunk:
+                                    # Check if it's an SSE error message
+                                    for line in chunk.split("\n"):
+                                        if line.startswith("data: "):
+                                            try:
+                                                data = json.loads(line[6:])
+                                                if data.get("type") == "error":
+                                                    error_message = data.get("message", error_message)
+                                                    break
+                                            except:
+                                                pass
+                            # If no SSE format, try to read as JSON
+                            if error_message.startswith("Upstream"):
+                                try:
+                                    error_data = await response.aread()
+                                    error_json = json.loads(error_data)
+                                    error_message = error_json.get("detail", error_message)
+                                except:
+                                    pass
+                        except Exception as e:
+                            error_message = f"Error reading response: {str(e)}"
+                        
                         yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
                         return
                     

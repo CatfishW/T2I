@@ -189,26 +189,56 @@ export default function Home() {
     try {
       const startTime = Date.now()
       
-      const response = await generateImageStream(
-        {
-          prompt,
-          negative_prompt: negativePrompt,
-          width,
-          height,
-          seed: seed >= 0 ? seed : undefined,
-          num_inference_steps: steps,
-        },
-        (update: ProgressUpdate) => {
-          if (update.type === "progress") {
-            setCurrentStep(update.step || 0)
-            setTotalSteps(update.total_steps || steps)
-            setProgressValue(update.progress || 0)
-          } else if (update.type === "complete") {
-            setProgressValue(100)
-            setCurrentStep(update.total_steps || steps)
+      let response: GenerateResponse
+      
+      // Try streaming endpoint first, fallback to regular endpoint if not available
+      try {
+        response = await generateImageStream(
+          {
+            prompt,
+            negative_prompt: negativePrompt,
+            width,
+            height,
+            seed: seed >= 0 ? seed : undefined,
+            num_inference_steps: steps,
+          },
+          (update: ProgressUpdate) => {
+            if (update.type === "progress") {
+              setCurrentStep(update.step || 0)
+              setTotalSteps(update.total_steps || steps)
+              setProgressValue(update.progress || 0)
+            } else if (update.type === "complete") {
+              setProgressValue(100)
+              setCurrentStep(update.total_steps || steps)
+            }
           }
+        )
+      } catch (streamError) {
+        // If streaming endpoint is not available (404), fallback to regular endpoint
+        if (streamError instanceof Error && streamError.message.includes("404")) {
+          console.warn("Streaming endpoint not available, using regular endpoint")
+          // Simulate progress for regular endpoint
+          const progressInterval = setInterval(() => {
+            setProgressValue((prev) => Math.min(prev + Math.random() * 10, 90))
+          }, 300)
+          
+          response = await generateImage({
+            prompt,
+            negative_prompt: negativePrompt,
+            width,
+            height,
+            seed: seed >= 0 ? seed : undefined,
+            num_inference_steps: steps,
+          })
+          
+          clearInterval(progressInterval)
+          setProgressValue(100)
+          setCurrentStep(steps)
+          setTotalSteps(steps)
+        } else {
+          throw streamError
         }
-      )
+      }
 
       const generatedImage: GeneratedImage = {
         id: response.image_id || `img-${Date.now()}`,

@@ -113,8 +113,21 @@ export async function generateImageStream(
 
         if (!reader) {
           if (!response.ok) {
-            const error = await response.json().catch(() => ({ detail: "Unknown error" }))
-            reject(new Error(error.detail || `HTTP error! status: ${response.status}`))
+            let errorMsg = `HTTP error! status: ${response.status}`
+            if (response.status === 404) {
+              errorMsg = `Endpoint not found. The server may need to be restarted to load the /generate-stream endpoint.`
+            } else if (response.status === 405) {
+              errorMsg = `Method not allowed. Please ensure the server supports POST requests to /generate-stream.`
+            } else {
+              // Try to read error as JSON
+              try {
+                const error = await response.json()
+                errorMsg = error.detail || error.message || errorMsg
+              } catch {
+                // If not JSON, use status-based message
+              }
+            }
+            reject(new Error(errorMsg))
           } else {
             reject(new Error("Response body is not readable"))
           }
@@ -146,7 +159,14 @@ export async function generateImageStream(
           } catch (e) {
             // Fall through to generic error
           }
-          reject(new Error(`HTTP error! status: ${response.status}`))
+          // Try to get more details about the error
+          let errorMsg = `HTTP error! status: ${response.status}`
+          if (response.status === 404) {
+            errorMsg = `Endpoint not found. The server may need to be restarted to load the /generate-stream endpoint.`
+          } else if (response.status === 405) {
+            errorMsg = `Method not allowed. Please ensure the server supports POST requests to /generate-stream.`
+          }
+          reject(new Error(errorMsg))
           return
         }
 
