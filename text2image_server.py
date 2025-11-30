@@ -219,16 +219,24 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
                     snapshots_dir = explicit_path_obj / "snapshots"
                     if snapshots_dir.exists():
                         for snapshot in snapshots_dir.iterdir():
-                            if snapshot.is_dir() and (snapshot / "config.json").exists():
-                                print(f"✓ Found explicit local model path (with snapshots): {snapshot}")
-                                return str(snapshot.resolve())
+                            if snapshot.is_dir():
+                                # Check for model_index.json (required for diffusers pipelines)
+                                if (snapshot / "model_index.json").exists():
+                                    print(f"✓ Found explicit local model path (with snapshots): {snapshot}")
+                                    return str(snapshot.resolve())
                     
-                    # Check for common model files
+                    # Check for model_index.json directly (diffusers pipeline format)
+                    if (explicit_path_obj / "model_index.json").exists():
+                        print(f"✓ Found explicit local model path (model_index.json found): {explicit_path_obj}")
+                        return str(explicit_path_obj.resolve())
+                    
+                    # Check for common model files as fallback
                     model_files = list(explicit_path_obj.glob("*.safetensors")) + \
                                  list(explicit_path_obj.glob("**/*.safetensors")) + \
                                  list(explicit_path_obj.glob("*.bin")) + \
                                  list(explicit_path_obj.glob("**/*.bin")) + \
                                  list(explicit_path_obj.glob("*.pt"))
+                    # Also check for config.json as fallback (older format)
                     if model_files or (explicit_path_obj / "config.json").exists():
                         print(f"✓ Found explicit local model path: {explicit_path_obj}")
                         return str(explicit_path_obj.resolve())
@@ -285,18 +293,29 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
             if snapshots_dir.exists():
                 try:
                     for snapshot in snapshots_dir.iterdir():
-                        if snapshot.is_dir() and (snapshot / "config.json").exists():
-                            print(f"✓ Found local model in {search_dir.name}/{folder_name}/snapshots: {snapshot.name}")
-                            return str(snapshot.resolve())
+                        if snapshot.is_dir():
+                            # Check for model_index.json (required for diffusers pipelines)
+                            if (snapshot / "model_index.json").exists():
+                                print(f"✓ Found local model in {search_dir.name}/{folder_name}/snapshots: {snapshot.name}")
+                                return str(snapshot.resolve())
                 except (OSError, PermissionError):
                     pass
             
-            # Check for model files or config
+            # Check for model_index.json directly (diffusers pipeline format)
+            try:
+                if (folder_path / "model_index.json").exists():
+                    print(f"✓ Found local model in {search_dir.name}/{folder_name} (model_index.json found)")
+                    return str(folder_path.resolve())
+            except (OSError, PermissionError):
+                pass
+            
+            # Check for model files or config as fallback
             try:
                 model_files = list(folder_path.glob("*.safetensors")) + \
                              list(folder_path.glob("**/*.safetensors")) + \
                              list(folder_path.glob("*.bin")) + \
                              list(folder_path.glob("*.pt"))
+                # Also check for config.json (older format)
                 config_file = folder_path / "config.json"
                 if model_files or config_file.exists():
                     print(f"✓ Found local model in {search_dir.name}/{folder_name}")
@@ -325,7 +344,8 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
             if snapshots_dir.exists():
                 for snapshot in snapshots_dir.iterdir():
                     if snapshot.is_dir():
-                        if (snapshot / "config.json").exists():
+                        # Check for model_index.json (required for diffusers pipelines)
+                        if (snapshot / "model_index.json").exists():
                             print(f"✓ Found local model in HuggingFace cache: {snapshot}")
                             return str(snapshot)
     
@@ -333,7 +353,12 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
     for base_dir in [script_dir, Path(".").resolve()]:
         models_dir = base_dir / "models" / cache_name
         if models_dir.exists() and models_dir.is_dir():
-            if (models_dir / "config.json").exists():
+            # Check for model_index.json first (diffusers format)
+            if (models_dir / "model_index.json").exists():
+                print(f"✓ Found local model in {base_dir.name}/models/{cache_name} (model_index.json found)")
+                return str(models_dir.resolve())
+            # Fallback to config.json
+            elif (models_dir / "config.json").exists():
                 print(f"✓ Found local model in {base_dir.name}/models/{cache_name}")
                 return str(models_dir.resolve())
     
