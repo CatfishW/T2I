@@ -44,9 +44,10 @@ export function Navbar({ activeTab, onTabChange, apiHealth }: NavbarProps) {
       style={{ position: 'sticky' }}
     >
       <div className="container mx-auto px-2 sm:px-4 max-w-7xl">
-        <div className="flex h-14 sm:h-16 md:h-18 items-center justify-center relative">
+        <div className="flex flex-col md:flex-row h-auto md:h-20 items-center justify-between py-2 md:py-0 relative gap-2 md:gap-0">
+
           {/* Left side - API Health & Theme Toggle */}
-          <div className="absolute left-2 sm:left-4 flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 order-2 md:order-1">
             {apiHealth === false && (
               <motion.div
                 initial={{ opacity: 0, scale: 0.8 }}
@@ -65,9 +66,8 @@ export function Navbar({ activeTab, onTabChange, apiHealth }: NavbarProps) {
             <ThemeToggle />
           </div>
 
-          {/* Center - Logo & Tabs */}
-          <div className="flex flex-col items-center gap-1 sm:gap-2 md:gap-3">
-            {/* Rowan University Logo & Branding */}
+          {/* Center - Logo */}
+          <div className="flex flex-col items-center gap-1 order-1 md:order-2 md:absolute md:left-1/2 md:-translate-x-1/2">
             <motion.div
               className="flex items-center gap-2 sm:gap-3"
               whileHover={{ scale: 1.02 }}
@@ -106,57 +106,57 @@ export function Navbar({ activeTab, onTabChange, apiHealth }: NavbarProps) {
                 </span>
               </div>
             </motion.div>
+          </div>
 
-            {/* Tabs - Centered */}
-            <div className="hidden md:flex items-center gap-1">
-              {tabs.map((tab) => {
-                const isActive = activeTab === tab.id
-                const isDisabled = tab.badge !== undefined
+          {/* Right side - Tabs */}
+          <div className="hidden md:flex items-center gap-1 order-3">
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.id
+              const isDisabled = tab.badge !== undefined
 
-                return (
-                  <motion.div
-                    key={tab.id}
-                    className="relative"
-                    whileHover={!isDisabled ? { scale: 1.05 } : {}}
-                    whileTap={!isDisabled ? { scale: 0.95 } : {}}
+              return (
+                <motion.div
+                  key={tab.id}
+                  className="relative"
+                  whileHover={!isDisabled ? { scale: 1.05 } : {}}
+                  whileTap={!isDisabled ? { scale: 0.95 } : {}}
+                >
+                  <Button
+                    variant={isActive ? "default" : "ghost"}
+                    className={`relative px-3 py-2 h-9 text-xs gap-2 font-medium ${isDisabled ? "opacity-50 cursor-not-allowed" : ""
+                      }`}
+                    onClick={() => !isDisabled && onTabChange(tab.id)}
+                    disabled={isDisabled}
                   >
-                    <Button
-                      variant={isActive ? "default" : "ghost"}
-                      className={`relative px-4 py-2 gap-2 font-medium ${isDisabled ? "opacity-50 cursor-not-allowed" : ""
-                        }`}
-                      onClick={() => !isDisabled && onTabChange(tab.id)}
-                      disabled={isDisabled}
-                    >
-                      {tab.icon}
-                      <span className="hidden lg:inline">{tab.label}</span>
-                      <span className="lg:hidden">{tab.label.split(" ")[0]}</span>
-                      {tab.badge && (
-                        <motion.span
-                          className="ml-1 text-xs px-1.5 py-0.5 rounded-full bg-secondary/20 text-secondary-foreground"
-                          initial={{ scale: 0 }}
-                          animate={{ scale: 1 }}
-                          transition={{ delay: 0.2 }}
-                        >
-                          {tab.badge}
-                        </motion.span>
-                      )}
-                      {isActive && (
-                        <motion.div
-                          className="absolute bottom-0 left-0 right-0 h-1 bg-secondary rounded-t-full"
-                          layoutId="activeTab"
-                          initial={false}
-                          transition={{
-                            type: "spring",
-                            stiffness: 500,
-                            damping: 30,
-                          }}
-                        />
-                      )}
-                    </Button>
-                  </motion.div>
-                )
-              })}
-            </div>
+                    {tab.icon}
+                    <span className="hidden lg:inline">{tab.label}</span>
+                    <span className="lg:hidden">{tab.label.split(" ")[0]}</span>
+                    {tab.badge && (
+                      <motion.span
+                        className="ml-1 text-[10px] px-1 py-0.5 rounded-full bg-secondary/20 text-secondary-foreground"
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        transition={{ delay: 0.2 }}
+                      >
+                        {tab.badge}
+                      </motion.span>
+                    )}
+                    {isActive && (
+                      <motion.div
+                        className="absolute bottom-0 left-0 right-0 h-1 bg-secondary rounded-t-full"
+                        layoutId="activeTab"
+                        initial={false}
+                        transition={{
+                          type: "spring",
+                          stiffness: 500,
+                          damping: 30,
+                        }}
+                      />
+                    )}
+                  </Button>
+                </motion.div>
+              )
+            })}
           </div>
         </div>
       </div>
