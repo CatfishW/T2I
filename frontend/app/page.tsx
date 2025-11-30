@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Textarea } from "@/components/ui/textarea"
 import { Navbar } from "@/components/navbar"
-import { generateImage, generateImageStream, checkHealth, type ProgressUpdate, type GenerateResponse } from "@/lib/api"
+import { generateImage, generateImageStream, checkHealth, type ProgressUpdate, type GenerateResponse, type GenerateRequest } from "@/lib/api"
 import { RESOLUTION_PRESETS, type GeneratedImage } from "@/types"
 import { toast } from "sonner"
 import {
@@ -60,6 +60,7 @@ export default function Home() {
   const [progressValue, setProgressValue] = useState(0)
   const [currentStep, setCurrentStep] = useState(0)
   const [totalSteps, setTotalSteps] = useState(0)
+  const [queue, setQueue] = useState<GenerateRequest[]>([])
 
   // UI State
   const [showSettings, setShowSettings] = useState(true)
@@ -94,22 +95,11 @@ export default function Home() {
     }
   }, [isGenerating])
 
-  const handleGenerate = useCallback(async () => {
-    if (!prompt.trim()) {
-      toast.error("Please enter a prompt")
-      promptInputRef.current?.focus()
-      return
-    }
-
-    if (apiHealth === false) {
-      toast.error("API is not available. Please check the backend connection.")
-      return
-    }
-
+  const processQueueItem = useCallback(async (request: GenerateRequest) => {
     setIsGenerating(true)
     setProgressValue(0)
     setCurrentStep(0)
-    setTotalSteps(steps)
+    setTotalSteps(request.num_inference_steps || steps)
 
     try {
       const startTime = Date.now()
@@ -117,23 +107,16 @@ export default function Home() {
 
       try {
         response = await generateImageStream(
-          {
-            prompt,
-            negative_prompt: negativePrompt,
-            width,
-            height,
-            seed: seed >= 0 ? seed : undefined,
-            num_inference_steps: steps,
-          },
+          request,
           (update: ProgressUpdate) => {
             if (update.type === "progress") {
               setCurrentStep(update.step || 0)
-              setTotalSteps(update.total_steps || steps)
+              setTotalSteps(update.total_steps || (request.num_inference_steps || steps))
               setProgressValue(Math.min(100, Math.max(0, update.progress || 0)))
             } else if (update.type === "complete") {
               setProgressValue(100)
-              setCurrentStep(steps)
-              setTotalSteps(steps)
+              setCurrentStep(request.num_inference_steps || steps)
+              setTotalSteps(request.num_inference_steps || steps)
             }
           }
         )
@@ -145,19 +128,12 @@ export default function Home() {
             setProgressValue((prev) => Math.min(prev + Math.random() * 10, 90))
           }, 300)
 
-          response = await generateImage({
-            prompt,
-            negative_prompt: negativePrompt,
-            width,
-            height,
-            seed: seed >= 0 ? seed : undefined,
-            num_inference_steps: steps,
-          })
+          response = await generateImage(request)
 
           clearInterval(progressInterval)
           setProgressValue(100)
-          setCurrentStep(steps)
-          setTotalSteps(steps)
+          setCurrentStep(request.num_inference_steps || steps)
+          setTotalSteps(request.num_inference_steps || steps)
         } else {
           throw streamError
         }
@@ -175,12 +151,12 @@ export default function Home() {
       const generatedImage: GeneratedImage = {
         id: response.image_id || `img-${Date.now()}`,
         imageBase64: imageBase64,
-        prompt,
-        negativePrompt,
+        prompt: request.prompt,
+        negativePrompt: request.negative_prompt || "",
         seed: response.seed,
         width: response.width,
         height: response.height,
-        steps,
+        steps: request.num_inference_steps || steps,
         generationTimeMs: response.generation_time_ms,
         timestamp: startTime,
       }
@@ -194,7 +170,43 @@ export default function Home() {
     } finally {
       setIsGenerating(false)
     }
-  }, [prompt, negativePrompt, width, height, seed, steps, apiHealth])
+  }, [steps])
+
+  // Queue processing effect
+  useEffect(() => {
+    if (!isGenerating && queue.length > 0) {
+      const nextRequest = queue[0]
+      setQueue((prev) => prev.slice(1))
+      processQueueItem(nextRequest)
+    }
+  }, [isGenerating, queue, processQueueItem])
+
+  const handleGenerate = useCallback(() => {
+    if (!prompt.trim()) {
+      toast.error("Please enter a prompt")
+      promptInputRef.current?.focus()
+      return
+    }
+
+    if (apiHealth === false) {
+      toast.error("API is not available. Please check the backend connection.")
+      return
+    }
+
+    const request: GenerateRequest = {
+      prompt,
+      negative_prompt: negativePrompt,
+      width,
+      height,
+      seed: seed >= 0 ? seed : -1,
+      num_inference_steps: steps,
+    }
+
+    setQueue((prev) => [...prev, request])
+    if (isGenerating || queue.length > 0) {
+      toast.success("Added to queue")
+    }
+  }, [prompt, negativePrompt, width, height, seed, steps, apiHealth, isGenerating, queue.length])
 
   const handleRandomSeed = () => {
     const newSeed = Math.floor(Math.random() * 2 ** 32)
@@ -432,7 +444,7 @@ export default function Home() {
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value.slice(0, 2000))}
                   placeholder="Describe your imagination..."
-                  className="min-h-[60px] max-h-[120px] pr-32 bg-transparent border-none focus-visible:ring-0 resize-none text-base py-3 px-4"
+                  className="min-h-[60px] max-h-[120px] pr-48 bg-transparent border-none focus-visible:ring-0 resize-none text-base py-3 px-4"
                   maxLength={2000}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
@@ -447,16 +459,19 @@ export default function Home() {
                   </span>
                   <Button
                     onClick={handleGenerate}
-                    disabled={isGenerating || !prompt.trim()}
+                    disabled={!prompt.trim()}
                     size="sm"
                     className="h-9 px-4 bg-gradient-to-r from-primary to-rowan-gold hover:opacity-90 transition-opacity text-white shadow-lg"
                   >
                     {isGenerating ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                        {queue.length > 0 ? `Queue (${queue.length})` : "Generating..."}
+                      </>
                     ) : (
                       <>
                         <Sparkles className="w-4 h-4 mr-2" />
-                        Generate
+                        {queue.length > 0 ? `Queue (${queue.length})` : "Generate"}
                       </>
                     )}
                   </Button>
@@ -476,66 +491,70 @@ export default function Home() {
               )}
             </motion.div>
           </div>
-        </div>
+        </div >
 
         {/* Right Sidebar - Gallery (Collapsible) */}
         <AnimatePresence>
-          {showGallery && (
-            <motion.aside
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 320, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              className="border-l border-border bg-card/50 backdrop-blur-sm hidden xl:flex flex-col"
-            >
-              <div className="p-4 border-b border-border flex items-center justify-between">
-                <h3 className="font-semibold flex items-center gap-2">
-                  <History className="w-4 h-4" />
-                  History
-                </h3>
-                <Button variant="ghost" size="icon" onClick={() => setShowGallery(false)}>
-                  <X className="w-4 h-4" />
-                </Button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {gallery.map((img) => (
-                  <motion.div
-                    key={img.id}
-                    layoutId={img.id}
-                    className="group relative aspect-square rounded-lg overflow-hidden cursor-pointer ring-1 ring-border hover:ring-primary transition-all"
-                    onClick={() => setCurrentImage(img)}
-                  >
-                    <img src={img.imageBase64} alt={img.prompt} className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                      <Button size="icon" variant="secondary" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); handleDownload(img) }}>
-                        <Download className="w-4 h-4" />
-                      </Button>
+          {
+            showGallery && (
+              <motion.aside
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: 320, opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                className="border-l border-border bg-card/50 backdrop-blur-sm hidden xl:flex flex-col"
+              >
+                <div className="p-4 border-b border-border flex items-center justify-between">
+                  <h3 className="font-semibold flex items-center gap-2">
+                    <History className="w-4 h-4" />
+                    History
+                  </h3>
+                  <Button variant="ghost" size="icon" onClick={() => setShowGallery(false)}>
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {gallery.map((img) => (
+                    <motion.div
+                      key={img.id}
+                      layoutId={img.id}
+                      className="group relative aspect-square rounded-lg overflow-hidden cursor-pointer ring-1 ring-border hover:ring-primary transition-all"
+                      onClick={() => setCurrentImage(img)}
+                    >
+                      <img src={img.imageBase64} alt={img.prompt} className="w-full h-full object-cover" />
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                        <Button size="icon" variant="secondary" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); handleDownload(img) }}>
+                          <Download className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </motion.div>
+                  ))}
+                  {gallery.length === 0 && (
+                    <div className="text-center text-muted-foreground py-8 text-sm">
+                      No images generated yet.
                     </div>
-                  </motion.div>
-                ))}
-                {gallery.length === 0 && (
-                  <div className="text-center text-muted-foreground py-8 text-sm">
-                    No images generated yet.
-                  </div>
-                )}
-              </div>
-            </motion.aside>
-          )}
-        </AnimatePresence>
+                  )}
+                </div>
+              </motion.aside>
+            )
+          }
+        </AnimatePresence >
 
         {/* Gallery Toggle (if hidden) */}
-        {!showGallery && (
-          <div className="absolute right-0 top-1/2 -translate-y-1/2 z-20 hidden xl:block">
-            <Button
-              variant="secondary"
-              size="sm"
-              className="h-16 w-6 rounded-l-lg rounded-r-none p-0 shadow-lg border-l border-y border-border"
-              onClick={() => setShowGallery(true)}
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </Button>
-          </div>
-        )}
-      </main>
-    </div>
+        {
+          !showGallery && (
+            <div className="absolute right-0 top-1/2 -translate-y-1/2 z-20 hidden xl:block">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="h-16 w-6 rounded-l-lg rounded-r-none p-0 shadow-lg border-l border-y border-border"
+                onClick={() => setShowGallery(true)}
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </Button>
+            </div>
+          )
+        }
+      </main >
+    </div >
   )
 }
