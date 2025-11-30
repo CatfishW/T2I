@@ -53,6 +53,18 @@ from sdnq import SDNQConfig
 
 IS_WINDOWS = platform.system() == "Windows"
 
+# Detect if running in WSL (Windows Subsystem for Linux)
+def is_wsl() -> bool:
+    """Check if running in WSL"""
+    try:
+        with open("/proc/version", "r") as f:
+            version_info = f.read().lower()
+            return "microsoft" in version_info or "wsl" in version_info
+    except:
+        return False
+
+IS_WSL = is_wsl()
+
 # ============================================================================
 # CUDA Optimizations (apply at import time for best performance)
 # ============================================================================
@@ -154,65 +166,143 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
     Find local model path if available.
     Checks in order:
     1. Explicit path from config (if provided)
-    2. HuggingFace cache directory
-    3. Current directory (models--* format)
-    4. ./models/ directory
-    5. Return None to download from HuggingFace
+    2. Current directory (models--* format)
+    3. Script directory (where the script is located)
+    4. HuggingFace cache directory
+    5. ./models/ directory
+    6. Return None to download from HuggingFace
     """
+    # Get script directory for relative path resolution
+    script_dir = Path(__file__).parent.resolve()
+    
     # 1. Check explicit path from config
     if explicit_path:
-        explicit_path = Path(explicit_path).expanduser().resolve()
-        if explicit_path.exists():
-            # Check if it's a directory with model files
-            if explicit_path.is_dir():
-                # Check for common model files
-                model_files = list(explicit_path.glob("*.safetensors")) + \
-                             list(explicit_path.glob("*.bin")) + \
-                             list(explicit_path.glob("*.pt"))
-                if model_files or (explicit_path / "config.json").exists():
-                    print(f"✓ Found explicit local model path: {explicit_path}")
-                    return str(explicit_path)
+        # Normalize the path string (remove quotes, whitespace)
+        explicit_path = str(explicit_path).strip().strip('"').strip("'")
+        
+        # Handle relative paths from script directory
+        if not Path(explicit_path).is_absolute():
+            # Remove leading ./ if present
+            if explicit_path.startswith("./"):
+                explicit_path = explicit_path[2:]
+            
+            # Try relative to script directory first
+            explicit_path_candidate = (script_dir / explicit_path).resolve()
+            if explicit_path_candidate.exists():
+                explicit_path = str(explicit_path_candidate)
+                print(f"ℹ Resolved relative path to: {explicit_path}")
             else:
-                # Single file path
-                if explicit_path.exists():
-                    print(f"✓ Found explicit local model file: {explicit_path}")
-                    return str(explicit_path)
+                # Try relative to current working directory
+                explicit_path_candidate = Path(explicit_path).expanduser().resolve()
+                if explicit_path_candidate.exists():
+                    explicit_path = str(explicit_path_candidate)
+                    print(f"ℹ Resolved relative path (from CWD) to: {explicit_path}")
+                else:
+                    # Try without resolving (in case path exists but resolve() fails in WSL)
+                    explicit_path_candidate = script_dir / explicit_path
+                    if explicit_path_candidate.exists():
+                        explicit_path = str(explicit_path_candidate)
+                        print(f"ℹ Found path (non-resolved): {explicit_path}")
+                    else:
+                        print(f"⚠ Warning: Explicit local_path '{explicit_path}' not found at:")
+                        print(f"  - {script_dir / explicit_path}")
+                        print(f"  - {Path('.').resolve() / explicit_path}")
+                        print(f"  Will continue searching other locations...")
+                        explicit_path = None
+        
+        if explicit_path:
+            explicit_path_obj = Path(explicit_path)
+            if explicit_path_obj.exists():
+                # Check if it's a directory with model files
+                if explicit_path_obj.is_dir():
+                    # Check in snapshots subdirectory (HF cache structure)
+                    snapshots_dir = explicit_path_obj / "snapshots"
+                    if snapshots_dir.exists():
+                        for snapshot in snapshots_dir.iterdir():
+                            if snapshot.is_dir() and (snapshot / "config.json").exists():
+                                print(f"✓ Found explicit local model path (with snapshots): {snapshot}")
+                                return str(snapshot.resolve())
+                    
+                    # Check for common model files
+                    model_files = list(explicit_path_obj.glob("*.safetensors")) + \
+                                 list(explicit_path_obj.glob("**/*.safetensors")) + \
+                                 list(explicit_path_obj.glob("*.bin")) + \
+                                 list(explicit_path_obj.glob("**/*.bin")) + \
+                                 list(explicit_path_obj.glob("*.pt"))
+                    if model_files or (explicit_path_obj / "config.json").exists():
+                        print(f"✓ Found explicit local model path: {explicit_path_obj}")
+                        return str(explicit_path_obj.resolve())
+                else:
+                    # Single file path
+                    if explicit_path_obj.exists():
+                        print(f"✓ Found explicit local model file: {explicit_path_obj}")
+                        return str(explicit_path_obj.resolve())
     
-    # 2. Check current directory for model folders (models--* format)
-    # Check for any folder starting with "models--" that might contain the model
-    current_dir = Path(".").resolve()
+    # 2. Check script directory and current working directory for model folders
     cache_name = model_name.replace("/", "--")
     org, model = model_name.split("/", 1) if "/" in model_name else ("", model_name)
     
-    # Potential folder names to check
+    # Potential folder names to check (handle various naming conventions)
     potential_folder_names = [
         f"models--{cache_name}",
         f"models--{org}--{model.replace('-', '--')}" if org else None,
-        f"models--Tongyi-AI--Z-Image-Turbo",  # Common variant
+        f"models--Tongyi-AI--Z-Image-Turbo",  # Common variant with -AI-
+        f"models--Tongyi-MAI--Z-Image-Turbo",  # Exact match
         cache_name,
     ]
     
-    for folder_name in potential_folder_names:
-        if not folder_name:
+    # Check both script directory and current working directory
+    search_dirs = [
+        script_dir,  # Where the script is located
+        Path(".").resolve(),  # Current working directory
+    ]
+    
+    # Also check parent directory (common in WSL setups)
+    try:
+        parent_dir = script_dir.parent
+        if parent_dir != script_dir:  # Avoid infinite loops
+            search_dirs.append(parent_dir)
+    except:
+        pass
+    
+    for search_dir in search_dirs:
+        if not search_dir.exists():
             continue
-        folder_path = current_dir / folder_name
-        if folder_path.exists() and folder_path.is_dir():
-            # Check for model files or config
-            model_files = list(folder_path.glob("*.safetensors")) + \
-                         list(folder_path.glob("*.bin")) + \
-                         list(folder_path.glob("*.pt"))
-            config_file = folder_path / "config.json"
-            # Also check in snapshots subdirectory (HF cache structure)
+        for folder_name in potential_folder_names:
+            if not folder_name:
+                continue
+            folder_path = search_dir / folder_name
+            # Use exists() check that works better in WSL
+            try:
+                if not folder_path.exists() or not folder_path.is_dir():
+                    continue
+            except (OSError, PermissionError) as e:
+                # Skip if we can't access (WSL permission issues)
+                continue
+            
+            # Check in snapshots subdirectory (HF cache structure)
             snapshots_dir = folder_path / "snapshots"
             if snapshots_dir.exists():
-                for snapshot in snapshots_dir.iterdir():
-                    if snapshot.is_dir():
-                        if (snapshot / "config.json").exists():
-                            print(f"✓ Found local model in current directory: {snapshot}")
+                try:
+                    for snapshot in snapshots_dir.iterdir():
+                        if snapshot.is_dir() and (snapshot / "config.json").exists():
+                            print(f"✓ Found local model in {search_dir.name}/{folder_name}/snapshots: {snapshot.name}")
                             return str(snapshot.resolve())
-            elif model_files or config_file.exists():
-                print(f"✓ Found local model in current directory: {folder_path}")
-                return str(folder_path.resolve())
+                except (OSError, PermissionError):
+                    pass
+            
+            # Check for model files or config
+            try:
+                model_files = list(folder_path.glob("*.safetensors")) + \
+                             list(folder_path.glob("**/*.safetensors")) + \
+                             list(folder_path.glob("*.bin")) + \
+                             list(folder_path.glob("*.pt"))
+                config_file = folder_path / "config.json"
+                if model_files or config_file.exists():
+                    print(f"✓ Found local model in {search_dir.name}/{folder_name}")
+                    return str(folder_path.resolve())
+            except (OSError, PermissionError):
+                continue
     
     # 3. Check HuggingFace cache directory
     hf_home = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE")
@@ -239,12 +329,20 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
                             print(f"✓ Found local model in HuggingFace cache: {snapshot}")
                             return str(snapshot)
     
-    # 4. Check ./models/ directory
-    models_dir = Path(".") / "models" / cache_name
-    if models_dir.exists() and models_dir.is_dir():
-        if (models_dir / "config.json").exists():
-            print(f"✓ Found local model in ./models/: {models_dir}")
-            return str(models_dir.resolve())
+    # 4. Check ./models/ directory (both script dir and current dir)
+    for base_dir in [script_dir, Path(".").resolve()]:
+        models_dir = base_dir / "models" / cache_name
+        if models_dir.exists() and models_dir.is_dir():
+            if (models_dir / "config.json").exists():
+                print(f"✓ Found local model in {base_dir.name}/models/{cache_name}")
+                return str(models_dir.resolve())
+    
+    # 5. Debug output if nothing found
+    print(f"ℹ Local model search locations checked:")
+    print(f"  - Script directory: {script_dir}")
+    print(f"  - Current directory: {Path('.').resolve()}")
+    print(f"  - Explicit path: {explicit_path or 'None'}")
+    print(f"  - HuggingFace cache: {hf_cache_path if 'hf_cache_path' in locals() else 'Default location'}")
     
     return None
 
@@ -378,22 +476,28 @@ async def lifespan(app: FastAPI):
     
     # Startup
     print("\nLoading model...")
+    if IS_WSL:
+        print("ℹ Running in WSL - Using enhanced path resolution")
     try:
         # Try to find local model first
+        print(f"Searching for local model (explicit path: {MODEL_LOCAL_PATH or 'None'})...")
         local_model_path = find_local_model(MODEL_NAME, MODEL_LOCAL_PATH)
         
         if local_model_path:
-            print(f"Using local model from: {local_model_path}")
+            print(f"✓ Using local model from: {local_model_path}")
             model_path = local_model_path
+            use_local_only = True
         else:
-            print(f"Local model not found, will download from HuggingFace: {MODEL_NAME}")
+            print(f"⚠ Local model not found, will download from HuggingFace: {MODEL_NAME}")
             model_path = MODEL_NAME
+            use_local_only = False
         
+        print(f"Loading model from: {model_path}")
         pipe = ZImagePipeline.from_pretrained(
             model_path,
             torch_dtype=TORCH_DTYPE,
             low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
-            local_files_only=(local_model_path is not None),  # Only use local files if we found a local path
+            local_files_only=use_local_only,  # Only use local files if we found a local path
         )
         
         # Memory optimization: CPU offloading (must be done before moving to CUDA)
