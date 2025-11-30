@@ -1,16 +1,22 @@
 // Get API URL from environment or construct from current host
 function getApiUrl(): string {
-  // If explicitly set in environment, use that
-  if (process.env.NEXT_PUBLIC_API_URL) {
-    return process.env.NEXT_PUBLIC_API_URL
-  }
-  
-  // In browser, use same host as current page but with backend port
+  // In browser, always use same host as current page but with backend port
+  // This ensures it works when deployed on remote servers
   if (typeof window !== 'undefined') {
     const protocol = window.location.protocol
     const hostname = window.location.hostname
     // Backend runs on port 21115
     return `${protocol}//${hostname}:21115`
+  }
+  
+  // For server-side rendering, check environment variable first
+  // If set and not localhost, use it; otherwise fallback to localhost
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    const envUrl = process.env.NEXT_PUBLIC_API_URL
+    // If environment URL is not localhost, use it
+    if (!envUrl.includes('localhost') && !envUrl.includes('127.0.0.1')) {
+      return envUrl
+    }
   }
   
   // Fallback for server-side rendering
