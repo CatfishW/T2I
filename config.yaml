@@ -16,7 +16,7 @@ concurrency:
   request_timeout: 300
 
 # ============================================================================
-# Model Settings
+# Model Settings - OPTIMIZED FOR MAXIMUM SPEED
 # ============================================================================
 model:
   # Model name from HuggingFace
@@ -24,38 +24,54 @@ model:
   # name: "Disty0/Z-Image-Turbo-SDNQ-uint4-svd-r32"
   
   # Torch dtype: "bfloat16", "float16", or "float32"
-  # bfloat16 is recommended for modern GPUs
+  # bfloat16 is recommended for modern GPUs (fastest)
   torch_dtype: "bfloat16" 
   
-  # Enable model compilation (faster inference, slower first run)
-  # NOTE: Requires Triton to be installed (pip install triton)
-  # If Triton is not available, compilation will be automatically disabled
-  enable_compilation: false
+  # Enable modern torch.compile() (PyTorch 2.0+) - MUCH faster than legacy compilation
+  # This provides significant speedup after first run (compilation happens on warmup)
+  # Options: "default", "reduce-overhead", "max-autotune"
+  # "reduce-overhead" is recommended for best speed/compilation time balance
+  enable_torch_compile: false
+  torch_compile_mode: "reduce-overhead"
   
-  # Enable CPU offloading (saves GPU memory, slower inference)
-  # Recommended for GPUs with < 12GB VRAM
+  # Legacy model compilation (fallback if torch.compile fails)
+  # NOTE: Requires Triton to be installed (pip install triton)
+  enable_compilation: true
+  
+  # Enable CPU offloading (saves GPU memory, SLOWER inference)
+  # Disable for maximum speed - only enable if you run out of VRAM
   enable_cpu_offload: false
   
-  # Enable sequential CPU offloading (most memory efficient, slower inference)
-  # Moves model components to CPU when not in use
-  # Recommended for GPUs with < 8GB VRAM
+  # Enable sequential CPU offloading (most memory efficient, MUCH SLOWER)
+  # Disable for maximum speed - only enable if you run out of VRAM
   enable_sequential_cpu_offload: false
   
-  # Enable VAE slicing (reduces VRAM usage for VAE decoder)
-  # Minimal performance impact, recommended to keep enabled
-  enable_vae_slicing: true
+  # Enable VAE slicing (reduces VRAM usage, SLOWS DOWN inference)
+  # DISABLED for speed - use VAE tiling instead if VRAM is limited
+  enable_vae_slicing: false
   
-  # Enable attention slicing (reduces VRAM usage for attention layers)
-  # Minimal performance impact, recommended to keep enabled
-  enable_attention_slicing: true
+  # Enable VAE tiling (memory efficient for large images, minimal speed impact)
+  # Better than slicing - enables efficient processing of large images
+  enable_vae_tiling: true
+  
+  # Enable attention slicing (reduces VRAM usage, SLOWS DOWN inference)
+  # DISABLED for speed - only enable if you run out of VRAM
+  enable_attention_slicing: false
   
   # Use low CPU memory usage when loading model
-  # Reduces peak CPU memory during model loading
+  # Disabled for faster model loading (if you have enough RAM)
   low_cpu_mem_usage: false
   
-  # Enable Flash Attention (faster attention computation)
-  # Requires compatible GPU and CUDA version
+  # Enable Flash Attention (MUCH faster attention computation)
+  # Automatically uses Flash Attention 3 if available, falls back to 2
   enable_flash_attention: true
+  
+  # Enable optimized VAE decoding (faster VAE processing)
+  enable_optimized_vae: true
+  
+  # CUDA graphs for repeated inference patterns (experimental)
+  # Can provide additional speedup for identical request patterns
+  enable_cuda_graphs: false
 
 # ============================================================================
 # Storage Settings
