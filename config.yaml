@@ -6,8 +6,8 @@
 # ============================================================================
 concurrency:
   # Maximum concurrent image generations (adjust based on GPU VRAM)
-  # Recommended: 1-4 depending on GPU memory
-  max_concurrent: 4
+  # Recommended: 1-2 for lower VRAM usage, 3-4 for GPUs with 24GB+ VRAM
+  max_concurrent: 2
   
   # Maximum number of requests in queue
   max_queue: 50
@@ -35,9 +35,26 @@ model:
   # Recommended for GPUs with < 12GB VRAM
   enable_cpu_offload: false
   
+  # Enable sequential CPU offloading (most memory efficient, slower inference)
+  # Moves model components to CPU when not in use
+  # Recommended for GPUs with < 8GB VRAM
+  enable_sequential_cpu_offload: false
+  
+  # Enable VAE slicing (reduces VRAM usage for VAE decoder)
+  # Minimal performance impact, recommended to keep enabled
+  enable_vae_slicing: true
+  
+  # Enable attention slicing (reduces VRAM usage for attention layers)
+  # Minimal performance impact, recommended to keep enabled
+  enable_attention_slicing: true
+  
+  # Use low CPU memory usage when loading model
+  # Reduces peak CPU memory during model loading
+  low_cpu_mem_usage: true
+  
   # Enable Flash Attention (faster attention computation)
   # Requires compatible GPU and CUDA version
-  enable_flash_attention: false
+  enable_flash_attention: true
 
 # ============================================================================
 # Storage Settings

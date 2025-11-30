@@ -45,7 +45,7 @@ def load_config(config_path: str = "config.yaml") -> Dict:
     # Default configuration
     default_config = {
         "concurrency": {
-            "max_concurrent": 4,
+            "max_concurrent": 2,
             "max_queue": 50,
             "request_timeout": 300
         },
@@ -54,7 +54,11 @@ def load_config(config_path: str = "config.yaml") -> Dict:
             "torch_dtype": "bfloat16",
             "enable_compilation": False,
             "enable_cpu_offload": False,
-            "enable_flash_attention": False
+            "enable_sequential_cpu_offload": False,
+            "enable_vae_slicing": True,
+            "enable_attention_slicing": True,
+            "enable_flash_attention": False,
+            "low_cpu_mem_usage": True
         },
         "storage": {
             "images_dir": "images",
@@ -133,7 +137,11 @@ if ENABLE_COMPILATION_REQUESTED and not TRITON_AVAILABLE:
     print("=" * 60)
 
 ENABLE_CPU_OFFLOAD = config["model"]["enable_cpu_offload"]
+ENABLE_SEQUENTIAL_CPU_OFFLOAD = config["model"].get("enable_sequential_cpu_offload", False)
+ENABLE_VAE_SLICING = config["model"].get("enable_vae_slicing", True)
+ENABLE_ATTENTION_SLICING = config["model"].get("enable_attention_slicing", True)
 ENABLE_FLASH_ATTENTION = config["model"]["enable_flash_attention"]
+LOW_CPU_MEM_USAGE = config["model"].get("low_cpu_mem_usage", True)
 
 # Storage
 IMAGES_DIR = Path(config["storage"]["images_dir"])
@@ -183,7 +191,11 @@ async def lifespan(app: FastAPI):
     print(f"Max Queue Size: {MAX_QUEUE_SIZE}")
     print(f"Model Compilation: {ENABLE_COMPILATION}")
     print(f"CPU Offloading: {ENABLE_CPU_OFFLOAD}")
+    print(f"Sequential CPU Offloading: {ENABLE_SEQUENTIAL_CPU_OFFLOAD}")
+    print(f"VAE Slicing: {ENABLE_VAE_SLICING}")
+    print(f"Attention Slicing: {ENABLE_ATTENTION_SLICING}")
     print(f"Flash Attention: {ENABLE_FLASH_ATTENTION}")
+    print(f"Low CPU Memory Usage: {LOW_CPU_MEM_USAGE}")
     print("=" * 60)
     
     # Startup
@@ -192,10 +204,36 @@ async def lifespan(app: FastAPI):
         pipe = ZImagePipeline.from_pretrained(
             MODEL_NAME,
             torch_dtype=TORCH_DTYPE,
-            low_cpu_mem_usage=False,
+            low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
         )
-        pipe.to("cuda")
-        print("✓ Model loaded on CUDA")
+        
+        # Memory optimization: CPU offloading (must be done before moving to CUDA)
+        if ENABLE_SEQUENTIAL_CPU_OFFLOAD:
+            pipe.enable_sequential_cpu_offload()
+            print("✓ Sequential CPU offloading enabled (most memory efficient)")
+        elif ENABLE_CPU_OFFLOAD:
+            pipe.enable_model_cpu_offload()
+            print("✓ CPU offloading enabled")
+        else:
+            pipe.to("cuda")
+            print("✓ Model loaded on CUDA")
+        
+        # VAE slicing - reduces VRAM usage for VAE decoder
+        if ENABLE_VAE_SLICING:
+            try:
+                pipe.enable_vae_slicing()
+                print("✓ VAE slicing enabled (reduces VRAM usage)")
+            except Exception as e:
+                print(f"⚠ VAE slicing not available: {e}")
+        
+        # Attention slicing - reduces VRAM usage for attention layers
+        if ENABLE_ATTENTION_SLICING:
+            try:
+                # Use a reasonable slice size (1 = most memory efficient, higher = faster)
+                pipe.enable_attention_slicing(slice_size=1)
+                print("✓ Attention slicing enabled (reduces VRAM usage)")
+            except Exception as e:
+                print(f"⚠ Attention slicing not available: {e}")
         
         # Optional optimizations
         if ENABLE_FLASH_ATTENTION:
@@ -220,10 +258,6 @@ async def lifespan(app: FastAPI):
                 print("  Continuing without compilation...")
                 # Disable compilation for future runs
                 ENABLE_COMPILATION = False
-        
-        if ENABLE_CPU_OFFLOAD:
-            pipe.enable_model_cpu_offload()
-            print("✓ CPU offloading enabled")
         
         # Warm up the model with a dummy generation
         # print("\nWarming up model...")
