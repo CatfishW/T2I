@@ -68,8 +68,16 @@ export async function checkHealth(): Promise<boolean> {
     
     // Parse the response to check the actual status
     const data = await response.json()
-    // Check if status is "healthy" or if gateway is "running" (degraded is still considered online)
-    return data.status === "healthy" || data.gateway === "running"
+    
+    // Only consider healthy if:
+    // 1. Overall status is "healthy"
+    // 2. Text2Image server has model loaded and CUDA available
+    const isHealthy = 
+      data.status === "healthy" &&
+      data.text2image_server?.model_loaded === true &&
+      data.text2image_server?.cuda_available === true
+    
+    return isHealthy
   } catch (error) {
     // Handle network errors, timeouts, and other failures
     if (error instanceof Error && error.name === "AbortError") {

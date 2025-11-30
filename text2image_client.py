@@ -2,6 +2,45 @@
 """
 Text2Image Server Client
 Simple client to test the text2image_server.py API
+
+Example Commands:
+    # Check server health
+    python text2image_client.py --health
+    python text2image_client.py --health --url http://localhost:8000
+
+    # Get server metrics
+    python text2image_client.py --metrics
+    python text2image_client.py --metrics --url http://localhost:8000
+
+    # Generate a simple image
+    python text2image_client.py --prompt "a beautiful sunset over mountains"
+
+    # Generate with custom dimensions
+    python text2image_client.py --prompt "a cat wearing sunglasses" --width 512 --height 512
+
+    # Generate with specific seed for reproducibility
+    python text2image_client.py --prompt "futuristic city" --seed 42
+
+    # Generate with negative prompt
+    python text2image_client.py --prompt "a serene landscape" --negative-prompt "people, buildings, cars"
+
+    # Generate with custom inference steps and guidance
+    python text2image_client.py --prompt "abstract art" --steps 20 --guidance 7.5
+
+    # Generate and save to specific file
+    python text2image_client.py --prompt "space exploration" --output ./images/space.png
+
+    # Generate with all parameters
+    python text2image_client.py --prompt "cyberpunk cityscape" \
+        --negative-prompt "blurry, low quality" \
+        --width 1024 --height 1024 \
+        --seed 123 \
+        --steps 15 \
+        --guidance 5.0 \
+        --output ./output/cyberpunk.png
+
+    # Connect to remote server
+    python text2image_client.py --prompt "test image" --url http://192.168.1.100:8000
 """
 
 import argparse
@@ -111,7 +150,7 @@ class Text2ImageClient:
 
 def main():
     parser = argparse.ArgumentParser(description="Text2Image Server Client")
-    parser.add_argument("--url", default="http://localhost:8000", help="Server URL")
+    parser.add_argument("--url", default="http://localhost:8010", help="Server URL")
     parser.add_argument("--prompt", required=True, help="Text prompt for image generation")
     parser.add_argument("--negative-prompt", default="", help="Negative prompt")
     parser.add_argument("--height", type=int, default=1024, help="Image height")

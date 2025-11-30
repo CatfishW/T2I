@@ -226,24 +226,24 @@ async def lifespan(app: FastAPI):
             print("✓ CPU offloading enabled")
         
         # Warm up the model with a dummy generation
-        print("\nWarming up model...")
-        try:
-            with torch.inference_mode():
-                with torch.no_grad():
-                    _ = pipe(
-                        prompt="warmup",
-                        height=512,
-                        width=512,
-                        num_inference_steps=4,
-                        guidance_scale=0.0,
-                        generator=torch.Generator("cuda").manual_seed(0),
-                    )
-            print("✓ Model warmed up")
-        except Exception as e:
-            print(f"⚠ Warmup failed (non-critical): {e}")
+        # print("\nWarming up model...")
+        # try:
+        #     with torch.inference_mode():
+        #         with torch.no_grad():
+        #             _ = pipe(
+        #                 prompt="warmup",
+        #                 height=512,
+        #                 width=512,
+        #                 num_inference_steps=4,
+        #                 guidance_scale=0.0,
+        #                 generator=torch.Generator("cuda").manual_seed(0),
+        #             )
+        #     print("✓ Model warmed up")
+        # except Exception as e:
+        #     print(f"⚠ Warmup failed (non-critical): {e}")
         
         print("\n" + "=" * 60)
-        print("Server ready! Listening on http://0.0.0.0:8000")
+        print("Server ready! Listening on http://0.0.0.0:8010")
         print("=" * 60 + "\n")
         
     except Exception as e:
@@ -524,7 +524,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="High-Performance Text-to-Image Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("--port", type=int, default=8010, help="Port to bind to")
     parser.add_argument("--workers", type=int, default=1, help="Number of workers (use 1 for GPU sharing)")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload (development only)")
     

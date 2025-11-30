@@ -1,13 +1,11 @@
 @echo off
 chcp 65001 >nul 2>&1
 
-REM Text2Image Server Reverse SSH Tunnel Maintainer (Windows version)
+REM Text2Image Server Forward SSH Tunnel (Windows version)
 
-REM This script establishes and maintains a reverse SSH tunnel from your Text2Image server
+REM This script creates a FORWARD SSH tunnel to access a REMOTE service locally
 
-REM (Machine A with private IP) to your web server (Machine B with public IP)
-
-REM Enables remote text-to-image inference on port 8010
+REM Use this if you want to access a service on the remote server from your local machine
 
 SETLOCAL EnableDelayedExpansion
 
@@ -21,7 +19,11 @@ SET REMOTE_USER=lobin
 
 SET REMOTE_HOST=vpn.agaii.org
 
-SET REMOTE_PORT=8010
+REM Remote service port on the remote server (e.g., Text2Image server on remote)
+
+SET REMOTE_SERVICE_PORT=8010
+
+REM Local port where you want to access the remote service
 
 SET LOCAL_PORT=8010
 
@@ -35,9 +37,13 @@ REM ============================================================================
 
 echo ╔════════════════════════════════════════════════════════════╗
 
-echo ║      Text2Image Server Reverse SSH Tunnel Maintainer       ║
+echo ║      Text2Image Forward SSH Tunnel Maintainer              ║
 
 echo ╚════════════════════════════════════════════════════════════╝
+
+echo.
+
+echo [INFO] FORWARD TUNNEL: Makes REMOTE service accessible LOCALLY
 
 echo.
 
@@ -109,61 +115,19 @@ if errorlevel 1 (
 
 )
 
-REM Test basic SSH connectivity
-
-echo [INFO] Testing SSH connectivity to %REMOTE_USER%@%REMOTE_HOST%...
-
-ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no "%REMOTE_USER%@%REMOTE_HOST%" exit >nul 2>nul
-
-if errorlevel 1 (
-
-    echo [WARNING] SSH connectivity test failed or requires authentication
-
-    echo [INFO] This is normal if key-based auth is not set up
-
-    echo [INFO] SSH will prompt for password when connecting
-
-) else (
-
-    echo [SUCCESS] SSH connectivity confirmed
-
-)
-
-REM Check if local Text2Image server is running
-
-echo [INFO] Checking local Text2Image server on port %LOCAL_PORT%...
-
-powershell -Command "try { $response = Invoke-WebRequest -Uri 'http://127.0.0.1:%LOCAL_PORT%/health' -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>nul
-
-if errorlevel 1 (
-
-    echo [WARNING] Local Text2Image server not responding on port %LOCAL_PORT%
-
-    echo [WARNING] Make sure text2image_server.py is running before starting tunnel
-
-    set /p CONTINUE="Continue anyway? (y/N): "
-
-    if /i not "!CONTINUE!"=="y" exit /b 1
-
-) else (
-
-    echo [SUCCESS] Local Text2Image server is running on port %LOCAL_PORT%
-
-)
-
 echo.
 
 echo [INFO] Configuration:
 
 echo   Remote Server: %REMOTE_USER%@%REMOTE_HOST%
 
-echo   Remote Port:   %REMOTE_PORT% (127.0.0.1 on Machine B)
+echo   Remote Service Port: %REMOTE_SERVICE_PORT% (on remote server)
 
-echo   Local Port:    %LOCAL_PORT% (Text2Image server)
+echo   Local Access Port:   %LOCAL_PORT% (on this machine)
 
-echo   Keepalive:     %KEEPALIVE_INTERVAL%s interval, %KEEPALIVE_MAX% max failures
+echo   Keepalive:           %KEEPALIVE_INTERVAL%s interval, %KEEPALIVE_MAX% max failures
 
-echo   Reconnect:     %RECONNECT_DELAY%s delay
+echo   Reconnect:           %RECONNECT_DELAY%s delay
 
 echo.
 
@@ -173,39 +137,39 @@ echo.
 
 echo [INFO] What's happening:
 
-echo   • REVERSE TUNNEL: Makes your LOCAL Text2Image server accessible on REMOTE server
+echo   • FORWARD TUNNEL: Makes REMOTE service accessible on YOUR local machine
 
-echo   • Your local server (127.0.0.1:%LOCAL_PORT% on THIS machine) is forwarded to:
+echo   • Remote server service (127.0.0.1:%REMOTE_SERVICE_PORT% on remote) is forwarded to:
 
-echo   • Remote server can access it at http://127.0.0.1:%REMOTE_PORT% (ONLY on remote server)
+echo   • Your local machine can access it at http://127.0.0.1:%LOCAL_PORT%
 
 echo   • This connection is encrypted and secure
 
 echo.
 
-echo [IMPORTANT] Reverse tunnel direction:
+echo [INFO] Forward tunnel direction:
 
 echo   THIS MACHINE (Local)          REMOTE SERVER
 
 echo   ──────────────────            ──────────────
 
-echo   Text2Image :%LOCAL_PORT%  ──>  Accessible at 127.0.0.1:%REMOTE_PORT%
+echo   Accessible at :%LOCAL_PORT% <──  Text2Image :%REMOTE_SERVICE_PORT%
 
 echo.
 
-echo [INFO] To verify on REMOTE SERVER (Machine B):
+echo [INFO] To test from THIS machine after tunnel starts:
 
-echo   1. SSH to remote: ssh %REMOTE_USER%@%REMOTE_HOST%
-
-echo   2. On remote server, run: curl http://127.0.0.1:%REMOTE_PORT%/health
+echo   curl http://127.0.0.1:%LOCAL_PORT%/health
 
 echo.
 
-echo [NOTE] You CANNOT access remote services through this reverse tunnel!
+echo [INFO] To use remote Text2Image service:
 
-echo        This tunnel only exposes YOUR local service to the remote server.
+echo   curl http://127.0.0.1:%LOCAL_PORT%/generate ^
 
-echo        To access remote services locally, you need a FORWARD tunnel (^>L^).
+echo     -H "Content-Type: application/json" ^
+
+echo     -d "{\"prompt\": \"your prompt here\", \"model\": \"your-model\"}"
 
 echo.
 
@@ -219,7 +183,9 @@ SET /a ATTEMPT+=1
 
 echo [INFO] Starting tunnel (attempt #%ATTEMPT%) at %TIME%...
 
-echo [INFO] Forwarding: %REMOTE_HOST%:%REMOTE_PORT% -^> 127.0.0.1:%LOCAL_PORT%
+echo [INFO] Forwarding: 127.0.0.1:%LOCAL_PORT% (local) <^> %REMOTE_HOST%:127.0.0.1:%REMOTE_SERVICE_PORT% (remote)
+
+echo.
 
 REM Build connection string
 
@@ -229,10 +195,13 @@ echo [DEBUG] Connection string: %SSH_CONNECT%
 
 echo.
 
-REM Start SSH tunnel (single line to avoid encoding issues)
+REM Start SSH forward tunnel (single line to avoid encoding issues)
+
 REM Using -F NUL to bypass SSH config file which might have encoding issues
 
-ssh -F NUL -R %REMOTE_PORT%:127.0.0.1:%LOCAL_PORT% -o ServerAliveInterval=%KEEPALIVE_INTERVAL% -o ServerAliveCountMax=%KEEPALIVE_MAX% -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no -o LogLevel=ERROR -N "%SSH_CONNECT%" 2>&1
+REM -L creates FORWARD tunnel: local_port:remote_host:remote_port
+
+ssh -F NUL -L %LOCAL_PORT%:127.0.0.1:%REMOTE_SERVICE_PORT% -o ServerAliveInterval=%KEEPALIVE_INTERVAL% -o ServerAliveCountMax=%KEEPALIVE_MAX% -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no -o LogLevel=ERROR -N "%SSH_CONNECT%" 2>&1
 
 SET EXIT_CODE=%ERRORLEVEL%
 
@@ -259,6 +228,8 @@ if %EXIT_CODE%==255 (
     echo   • SSH server not reachable on %REMOTE_HOST%
 
     echo   • Incorrect hostname or IP address
+
+    echo   • Remote service not running on port %REMOTE_SERVICE_PORT%
 
     echo.
 
@@ -288,6 +259,8 @@ if %EXIT_CODE%==255 (
 
         echo [INFO] Check SSH server is running and credentials are correct.
 
+        echo [INFO] Also verify remote service is running on port %REMOTE_SERVICE_PORT%
+
         echo.
 
     )
@@ -305,3 +278,4 @@ goto :TUNNEL_LOOP
 echo [INFO] Tunnel stopped
 
 pause
+

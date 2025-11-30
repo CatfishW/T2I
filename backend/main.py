@@ -151,21 +151,30 @@ async def health():
         return {
             "status": "unhealthy",
             "gateway": "not_initialized",
-            "text2image_server": "unknown",
+            "text2image_server": {
+                "status": "unknown",
+                "model_loaded": False,
+            },
         }
     
     try:
-        # Check upstream server
+        # Check upstream text2image server
         response = await http_client.get("/health", timeout=5.0)
         if response.status_code == 200:
             server_health = response.json()
+            model_loaded = server_health.get("model_loaded", False)
+            cuda_available = server_health.get("cuda_available", False)
+            
+            # Only consider healthy if model is loaded and CUDA is available
+            is_healthy = model_loaded and cuda_available
+            
             return {
-                "status": "healthy",
+                "status": "healthy" if is_healthy else "degraded",
                 "gateway": "running",
                 "text2image_server": {
                     "status": server_health.get("status", "unknown"),
-                    "model_loaded": server_health.get("model_loaded", False),
-                    "cuda_available": server_health.get("cuda_available", False),
+                    "model_loaded": model_loaded,
+                    "cuda_available": cuda_available,
                     "current_queue_size": server_health.get("current_queue_size", 0),
                     "active_generations": server_health.get("active_generations", 0),
                     "available_slots": server_health.get("available_slots", 0),
@@ -177,6 +186,8 @@ async def health():
                 "gateway": "running",
                 "text2image_server": {
                     "status": f"error_{response.status_code}",
+                    "model_loaded": False,
+                    "cuda_available": False,
                 },
             }
     except Exception as e:
@@ -185,6 +196,8 @@ async def health():
             "gateway": "running",
             "text2image_server": {
                 "status": "unreachable",
+                "model_loaded": False,
+                "cuda_available": False,
                 "error": str(e),
             },
         }
