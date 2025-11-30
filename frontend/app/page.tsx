@@ -52,7 +52,7 @@ export default function Home() {
   const [width, setWidth] = useState(1024)
   const [height, setHeight] = useState(1024)
   const [seed, setSeed] = useState<number>(-1)
-  const [steps, setSteps] = useState(30)
+  const [steps, setSteps] = useState(9)
   const [isGenerating, setIsGenerating] = useState(false)
   const [currentImage, setCurrentImage] = useState<GeneratedImage | null>(null)
   const [gallery, setGallery] = useState<GeneratedImage[]>([])
@@ -272,7 +272,13 @@ export default function Home() {
                       <Input
                         type="number"
                         value={width}
-                        onChange={(e) => setWidth(Number(e.target.value))}
+                        min={256}
+                        max={2048}
+                        onChange={(e) => {
+                          const val = Number(e.target.value)
+                          setWidth(val)
+                        }}
+                        onBlur={() => setWidth(Math.max(256, Math.min(2048, width)))}
                         className="h-8 bg-muted/50 border-transparent"
                       />
                     </div>
@@ -281,7 +287,13 @@ export default function Home() {
                       <Input
                         type="number"
                         value={height}
-                        onChange={(e) => setHeight(Number(e.target.value))}
+                        min={256}
+                        max={2048}
+                        onChange={(e) => {
+                          const val = Number(e.target.value)
+                          setHeight(val)
+                        }}
+                        onBlur={() => setHeight(Math.max(256, Math.min(2048, height)))}
                         className="h-8 bg-muted/50 border-transparent"
                       />
                     </div>
@@ -297,8 +309,8 @@ export default function Home() {
                   <Slider
                     value={[steps]}
                     onValueChange={(vals) => setSteps(vals[0])}
-                    min={10}
-                    max={100}
+                    min={6}
+                    max={12}
                     step={1}
                     className="py-2"
                   />
@@ -337,6 +349,7 @@ export default function Home() {
                     onChange={(e) => setNegativePrompt(e.target.value)}
                     placeholder="What to avoid..."
                     className="min-h-[80px] bg-muted/50 border-transparent resize-none text-sm"
+                    maxLength={2000}
                   />
                 </div>
               </div>
@@ -417,9 +430,10 @@ export default function Home() {
                 <Textarea
                   ref={promptInputRef}
                   value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
+                  onChange={(e) => setPrompt(e.target.value.slice(0, 2000))}
                   placeholder="Describe your imagination..."
                   className="min-h-[60px] max-h-[120px] pr-32 bg-transparent border-none focus-visible:ring-0 resize-none text-base py-3 px-4"
+                  maxLength={2000}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault()
