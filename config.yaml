@@ -25,7 +25,7 @@ model:
   
   # Torch dtype: "bfloat16", "float16", or "float32"
   # bfloat16 is recommended for modern GPUs
-  torch_dtype: "bfloat16"
+  torch_dtype: "bfloat16" 
   
   # Enable model compilation (faster inference, slower first run)
   # NOTE: Requires Triton to be installed (pip install triton)

@@ -34,6 +34,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
+from sdnq import SDNQConfig
+
 # ============================================================================
 # Configuration
 # ============================================================================
