@@ -1254,8 +1254,12 @@ async def generate_image_stream(request: GenerateRequest):
             # Send queue position update
             yield f"data: {json.dumps({'type': 'queued', 'queue_position': queue_position, 'request_id': request_id})}\n\n"
             
+            # Create a wrapper coroutine to await the future
+            async def wait_for_result():
+                return await future
+            
             # Start generation task (will be processed by queue worker)
-            generation_task = asyncio.create_task(future)
+            generation_task = asyncio.create_task(wait_for_result())
             
             # Stream progress updates
             progress_task = None
