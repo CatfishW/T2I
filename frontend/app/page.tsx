@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Navbar } from "@/components/navbar"
 import { Footer } from "@/components/footer"
-import { generateImage, checkHealth } from "@/lib/api"
+import { generateImage, generateImageStream, checkHealth, type ProgressUpdate } from "@/lib/api"
 import { RESOLUTION_PRESETS, type GeneratedImage } from "@/types"
 import { toast } from "sonner"
 import {
@@ -124,6 +124,8 @@ export default function Home() {
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null)
   const [apiHealth, setApiHealth] = useState<boolean | null>(null)
   const [progressValue, setProgressValue] = useState(0)
+  const [currentStep, setCurrentStep] = useState(0)
+  const [totalSteps, setTotalSteps] = useState(0)
   const [showTips, setShowTips] = useState(true)
   const [showLeftPanel, setShowLeftPanel] = useState(false)
   const [showRightPanel, setShowRightPanel] = useState(false)
@@ -159,17 +161,12 @@ export default function Home() {
     return () => clearInterval(interval)
   }, [])
 
-  // Simulate progress during generation
+  // Reset progress when generation starts/stops
   useEffect(() => {
-    if (isGenerating) {
+    if (!isGenerating) {
       setProgressValue(0)
-      const interval = setInterval(() => {
-        setProgressValue((prev) => Math.min(prev + Math.random() * 15, 90))
-      }, 500)
-      return () => clearInterval(interval)
-    } else {
-      setProgressValue(100)
-      setTimeout(() => setProgressValue(0), 500)
+      setCurrentStep(0)
+      setTotalSteps(0)
     }
   }, [isGenerating])
 
@@ -186,18 +183,32 @@ export default function Home() {
 
     setIsGenerating(true)
     setProgressValue(0)
+    setCurrentStep(0)
+    setTotalSteps(steps)
+    
     try {
       const startTime = Date.now()
-      const response = await generateImage({
-        prompt,
-        negative_prompt: negativePrompt,
-        width,
-        height,
-        seed: seed >= 0 ? seed : undefined,
-        num_inference_steps: steps,
-      })
-
-      setProgressValue(100)
+      
+      const response = await generateImageStream(
+        {
+          prompt,
+          negative_prompt: negativePrompt,
+          width,
+          height,
+          seed: seed >= 0 ? seed : undefined,
+          num_inference_steps: steps,
+        },
+        (update: ProgressUpdate) => {
+          if (update.type === "progress") {
+            setCurrentStep(update.step || 0)
+            setTotalSteps(update.total_steps || steps)
+            setProgressValue(update.progress || 0)
+          } else if (update.type === "complete") {
+            setProgressValue(100)
+            setCurrentStep(update.total_steps || steps)
+          }
+        }
+      )
 
       const generatedImage: GeneratedImage = {
         id: response.image_id || `img-${Date.now()}`,
@@ -704,21 +715,31 @@ export default function Home() {
                       )}
                     </Button>
                   </motion.div>
-                  {/* Progress bar */}
+                  {/* Progress bar with step info */}
                   <AnimatePresence>
                     {isGenerating && (
                       <motion.div
                         initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 4 }}
+                        animate={{ opacity: 1, height: "auto" }}
                         exit={{ opacity: 0, height: 0 }}
-                        className="w-full max-w-md mx-auto bg-muted rounded-full overflow-hidden"
+                        className="w-full max-w-md mx-auto space-y-2"
                       >
-                        <motion.div
-                          className="h-full bg-[#CC9900]"
-                          initial={{ width: 0 }}
-                          animate={{ width: `${progressValue}%` }}
-                          transition={{ type: "spring", stiffness: 100, damping: 30 }}
-                        />
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>
+                            {currentStep > 0 && totalSteps > 0
+                              ? `Step ${currentStep} of ${totalSteps}`
+                              : "Initializing..."}
+                          </span>
+                          <span>{progressValue}%</span>
+                        </div>
+                        <div className="w-full bg-muted rounded-full overflow-hidden h-2">
+                          <motion.div
+                            className="h-full bg-[#CC9900]"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${progressValue}%` }}
+                            transition={{ type: "spring", stiffness: 100, damping: 30 }}
+                          />
+                        </div>
                       </motion.div>
                     )}
                   </AnimatePresence>

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 from contextlib import asynccontextmanager
@@ -7,6 +8,7 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 # ============================================================================
@@ -310,6 +312,63 @@ async def generate_image(request: GenerateRequest):
                 status_code=500,
                 detail=f"Unexpected error: {str(e)}"
             )
+
+
+@app.post("/generate-stream")
+async def generate_image_stream(request: GenerateRequest):
+    """Generate an image with Server-Sent Events for progress streaming"""
+    if http_client is None:
+        raise HTTPException(status_code=503, detail="API Gateway not initialized")
+    
+    async def event_generator():
+        """Generator function for SSE events"""
+        async with request_semaphore:
+            try:
+                # Forward streaming request to text2image server
+                async with http_client.stream(
+                    "POST",
+                    "/generate-stream",
+                    json={
+                        "prompt": request.prompt,
+                        "negative_prompt": request.negative_prompt,
+                        "height": request.height,
+                        "width": request.width,
+                        "seed": request.seed,
+                        "num_inference_steps": request.num_inference_steps,
+                        "guidance_scale": request.guidance_scale,
+                    },
+                ) as response:
+                    if response.status_code != 200:
+                        error_detail = await response.aread()
+                        try:
+                            error_json = json.loads(error_detail)
+                            error_message = error_json.get("detail", "Unknown error")
+                        except:
+                            error_message = error_detail.decode("utf-8", errors="ignore")
+                        yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
+                        return
+                    
+                    # Stream the response from upstream server
+                    async for chunk in response.aiter_text():
+                        if chunk:
+                            yield chunk
+                            
+            except httpx.TimeoutException:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'Request to text-to-image server timed out after {REQUEST_TIMEOUT} seconds'})}\n\n"
+            except httpx.ConnectError:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'Cannot connect to text-to-image server at {TEXT2IMAGE_SERVER_URL}'})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 @app.get("/metrics")

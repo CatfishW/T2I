@@ -30,9 +30,10 @@ import yaml
 from diffusers import ZImagePipeline
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
+import json
 
 from sdnq import SDNQConfig
 
@@ -361,8 +362,9 @@ async def generate_image_async(
     num_inference_steps: int,
     guidance_scale: float,
     queue_start_time: float,
+    progress_callback=None,
 ) -> Dict:
-    """Generate image asynchronously"""
+    """Generate image asynchronously with optional progress callback"""
     generation_start = time.time()
     queue_wait_ms = int((generation_start - queue_start_time) * 1000)
     
@@ -376,19 +378,64 @@ async def generate_image_async(
         # Run generation in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
         
+        # Track progress
+        current_step = [0]
+        
+        def callback(pipe, step_index, timestep, callback_kwargs):
+            """Callback function to track generation progress"""
+            current_step[0] = step_index + 1
+            if progress_callback:
+                # Use thread-safe method to schedule coroutine from worker thread
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        progress_callback(step_index + 1, num_inference_steps),
+                        loop
+                    )
+                    # Don't wait for completion to avoid blocking
+                except Exception as e:
+                    # Ignore callback errors silently
+                    pass
+            return callback_kwargs
+        
         def _generate():
             with torch.inference_mode():
                 with torch.no_grad():
                     try:
-                        return pipe(
-                            prompt=prompt,
-                            negative_prompt=negative_prompt if negative_prompt else None,
-                            height=height,
-                            width=width,
-                            num_inference_steps=num_inference_steps,
-                            guidance_scale=guidance_scale,
-                            generator=generator,
-                        ).images[0]
+                        # Try with callback first
+                        if progress_callback:
+                            try:
+                                return pipe(
+                                    prompt=prompt,
+                                    negative_prompt=negative_prompt if negative_prompt else None,
+                                    height=height,
+                                    width=width,
+                                    num_inference_steps=num_inference_steps,
+                                    guidance_scale=guidance_scale,
+                                    generator=generator,
+                                    callback=callback,
+                                    callback_steps=1,  # Call callback every step
+                                ).images[0]
+                            except TypeError:
+                                # If callback parameter is not supported, fall back to no callback
+                                return pipe(
+                                    prompt=prompt,
+                                    negative_prompt=negative_prompt if negative_prompt else None,
+                                    height=height,
+                                    width=width,
+                                    num_inference_steps=num_inference_steps,
+                                    guidance_scale=guidance_scale,
+                                    generator=generator,
+                                ).images[0]
+                        else:
+                            return pipe(
+                                prompt=prompt,
+                                negative_prompt=negative_prompt if negative_prompt else None,
+                                height=height,
+                                width=width,
+                                num_inference_steps=num_inference_steps,
+                                guidance_scale=guidance_scale,
+                                generator=generator,
+                            ).images[0]
                     except Exception as e:
                         # If compilation error occurs during generation
                         error_str = str(e).lower()
@@ -550,6 +597,99 @@ async def generate_image(request: GenerateRequest):
             status_code=500,
             detail=f"Generation failed: {str(e)}"
         )
+
+@app.post("/generate-stream")
+async def generate_image_stream(request: GenerateRequest):
+    """Generate an image with Server-Sent Events for progress streaming"""
+    if pipe is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    if not torch.cuda.is_available():
+        raise HTTPException(status_code=503, detail="CUDA not available")
+    
+    # Check queue size
+    if request_queue.full():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Request queue is full (max {MAX_QUEUE_SIZE}). Please try again later."
+        )
+    
+    async def event_generator():
+        """Generator function for SSE events"""
+        metrics.total_requests += 1
+        queue_start_time = time.time()
+        progress_queue = asyncio.Queue()
+        
+        async def progress_callback(step: int, total_steps: int):
+            """Callback to send progress updates"""
+            await progress_queue.put({
+                "type": "progress",
+                "step": step,
+                "total_steps": total_steps,
+                "progress": int((step / total_steps) * 100)
+            })
+        
+        try:
+            async with generation_semaphore:
+                # Start generation task
+                generation_task = asyncio.create_task(
+                    generate_image_async(
+                        prompt=request.prompt,
+                        negative_prompt=request.negative_prompt,
+                        height=request.height,
+                        width=request.width,
+                        seed=request.seed,
+                        num_inference_steps=request.num_inference_steps,
+                        guidance_scale=request.guidance_scale,
+                        queue_start_time=queue_start_time,
+                        progress_callback=progress_callback,
+                    )
+                )
+                
+                # Stream progress updates
+                while True:
+                    try:
+                        # Wait for progress update or generation completion
+                        done, pending = await asyncio.wait(
+                            [generation_task, asyncio.create_task(progress_queue.get())],
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                        
+                        for task in done:
+                            if task == generation_task:
+                                # Generation completed
+                                result = await task
+                                yield f"data: {json.dumps({'type': 'complete', **result})}\n\n"
+                                return
+                            else:
+                                # Progress update
+                                progress = await task
+                                yield f"data: {json.dumps(progress)}\n\n"
+                                
+                        # Cancel pending tasks
+                        for task in pending:
+                            task.cancel()
+                            
+                    except asyncio.CancelledError:
+                        break
+                        
+        except asyncio.TimeoutError:
+            metrics.failed_generations += 1
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Request timed out after {REQUEST_TIMEOUT} seconds'})}\n\n"
+        except Exception as e:
+            metrics.failed_generations += 1
+            torch.cuda.empty_cache()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 # ============================================================================
 # Main Entry Point

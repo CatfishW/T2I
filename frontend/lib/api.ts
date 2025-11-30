@@ -42,6 +42,22 @@ export interface GenerateResponse {
   image_id?: string
 }
 
+export interface ProgressUpdate {
+  type: "progress" | "complete" | "error"
+  step?: number
+  total_steps?: number
+  progress?: number
+  message?: string
+  image_base64?: string
+  seed?: number
+  generation_time_ms?: number
+  width?: number
+  height?: number
+  image_id?: string
+}
+
+export type ProgressCallback = (update: ProgressUpdate) => void
+
 export async function generateImage(
   request: GenerateRequest
 ): Promise<GenerateResponse> {
@@ -67,6 +83,105 @@ export async function generateImage(
   }
 
   return response.json()
+}
+
+export async function generateImageStream(
+  request: GenerateRequest,
+  onProgress: ProgressCallback
+): Promise<GenerateResponse> {
+  return new Promise((resolve, reject) => {
+    const eventSource = new EventSource(
+      `${getApiUrl()}/generate-stream?${new URLSearchParams({
+        prompt: request.prompt,
+        negative_prompt: request.negative_prompt || "",
+        height: String(request.height || 1024),
+        width: String(request.width || 1024),
+        seed: String(request.seed === undefined ? -1 : request.seed),
+        num_inference_steps: String(request.num_inference_steps || 9),
+        guidance_scale: String(request.guidance_scale || 0.0),
+      })}`
+    )
+
+    // EventSource doesn't support POST, so we need to use fetch with ReadableStream
+    fetch(`${getApiUrl()}/generate-stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt: request.prompt,
+        negative_prompt: request.negative_prompt || "",
+        height: request.height || 1024,
+        width: request.width || 1024,
+        seed: request.seed === undefined ? -1 : request.seed,
+        num_inference_steps: request.num_inference_steps || 9,
+        guidance_scale: request.guidance_scale || 0.0,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({ detail: "Unknown error" }))
+          reject(new Error(error.detail || `HTTP error! status: ${response.status}`))
+          return
+        }
+
+        const reader = response.body?.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+
+        if (!reader) {
+          reject(new Error("Response body is not readable"))
+          return
+        }
+
+        const processChunk = async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read()
+              
+              if (done) {
+                break
+              }
+
+              buffer += decoder.decode(value, { stream: true })
+              const lines = buffer.split("\n")
+              buffer = lines.pop() || ""
+
+              for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                  try {
+                    const data = JSON.parse(line.slice(6))
+                    onProgress(data)
+
+                    if (data.type === "complete") {
+                      resolve({
+                        image_base64: data.image_base64,
+                        seed: data.seed,
+                        generation_time_ms: data.generation_time_ms,
+                        width: data.width,
+                        height: data.height,
+                        image_id: data.image_id,
+                      })
+                      return
+                    } else if (data.type === "error") {
+                      reject(new Error(data.message || "Generation failed"))
+                      return
+                    }
+                  } catch (e) {
+                    console.warn("Failed to parse SSE data:", e)
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            reject(error)
+          }
+        }
+
+        processChunk()
+      })
+      .catch(reject)
+  })
 }
 
 export async function checkHealth(): Promise<boolean> {
