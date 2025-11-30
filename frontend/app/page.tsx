@@ -30,15 +30,16 @@ import {
 } from "lucide-react"
 
 // Animation variants
+// Animation variants
 const fadeInUp = {
   hidden: { opacity: 0, y: 20 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: "easeOut" } },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: "easeOut" as const } },
   exit: { opacity: 0, y: 10, transition: { duration: 0.3 } }
 }
 
 const scaleIn = {
   hidden: { opacity: 0, scale: 0.9 },
-  visible: { opacity: 1, scale: 1, transition: { duration: 0.4, ease: "easeOut" } }
+  visible: { opacity: 1, scale: 1, transition: { duration: 0.4, ease: "easeOut" as const } }
 }
 
 type Tab = "text-to-image" | "image-to-video" | "image-to-image"
@@ -255,8 +256,8 @@ export default function Home() {
                         key={preset.label}
                         onClick={() => handlePresetSelect(preset)}
                         className={`p-2 rounded-lg border text-xs transition-all ${width === preset.width && height === preset.height
-                            ? "bg-primary/10 border-primary text-primary font-medium"
-                            : "bg-muted/50 border-transparent hover:bg-muted text-muted-foreground"
+                          ? "bg-primary/10 border-primary text-primary font-medium"
+                          : "bg-muted/50 border-transparent hover:bg-muted text-muted-foreground"
                           }`}
                       >
                         <div className="mb-1 aspect-square w-full bg-current opacity-20 rounded-sm"
