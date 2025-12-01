@@ -412,8 +412,152 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
     return None
 
 # ============================================================================
-# LoRA Loader Function
+# LoRA Loader Function (ComfyUI-style direct weight patching)
 # ============================================================================
+
+# Global storage for original weights and applied LoRAs
+_original_weights: Dict[str, Dict[str, torch.Tensor]] = {}
+_applied_loras: Dict[str, Dict] = {}  # {adapter_name: {path, strength, keys}}
+
+
+def _load_safetensors_lora(lora_path: Path) -> Dict[str, torch.Tensor]:
+    """Load LoRA weights from a safetensors file."""
+    try:
+        from safetensors.torch import load_file
+        return load_file(str(lora_path))
+    except ImportError:
+        raise ImportError("safetensors is required for loading LoRA files. Install with: pip install safetensors")
+
+
+def _parse_lora_key(lora_key: str) -> tuple:
+    """
+    Parse a LoRA key to extract the base layer name and LoRA component type.
+    
+    LoRA keys typically follow patterns like:
+    - "transformer.blocks.0.attn.to_q.lora_A.weight" / "...lora_B.weight"
+    - "lora_unet_down_blocks_0_attentions_0_proj_in.lora_up.weight" / "...lora_down.weight"
+    - Various other formats from different trainers
+    
+    Returns: (base_key, lora_type) where lora_type is 'A', 'B', 'alpha', or None
+    """
+    key_lower = lora_key.lower()
+    
+    # Detect LoRA component type
+    lora_type = None
+    if 'lora_a' in key_lower or 'lora_down' in key_lower:
+        lora_type = 'A'
+    elif 'lora_b' in key_lower or 'lora_up' in key_lower:
+        lora_type = 'B'
+    elif 'alpha' in key_lower:
+        lora_type = 'alpha'
+    
+    # Extract base key by removing LoRA-specific parts
+    base_key = lora_key
+    for pattern in ['.lora_A.weight', '.lora_B.weight', '.lora_A', '.lora_B',
+                    '.lora_down.weight', '.lora_up.weight', '.lora_down', '.lora_up',
+                    '.alpha']:
+        if pattern in base_key:
+            base_key = base_key.replace(pattern, '')
+            break
+    
+    return base_key, lora_type
+
+
+def _map_lora_keys_to_model(lora_state_dict: Dict[str, torch.Tensor], 
+                            model_state_dict: Dict[str, torch.Tensor],
+                            prefix: str = "transformer.") -> Dict[str, Dict]:
+    """
+    Map LoRA keys to model weight keys and organize by base layer.
+    
+    Returns: {base_model_key: {'A': tensor, 'B': tensor, 'alpha': value}}
+    """
+    lora_layers = {}
+    model_keys = set(model_state_dict.keys())
+    
+    for lora_key, lora_weight in lora_state_dict.items():
+        base_key, lora_type = _parse_lora_key(lora_key)
+        
+        if lora_type is None:
+            continue
+        
+        # Try to find the corresponding model key
+        model_key = None
+        
+        # Try direct match with .weight suffix
+        candidate = f"{base_key}.weight"
+        if candidate in model_keys:
+            model_key = candidate
+        elif base_key in model_keys:
+            model_key = base_key
+        else:
+            # Try with transformer prefix
+            for mk in model_keys:
+                # Normalize both keys for comparison
+                mk_normalized = mk.replace('_', '.').lower()
+                base_normalized = base_key.replace('_', '.').lower()
+                if base_normalized in mk_normalized or mk_normalized.endswith(base_normalized):
+                    model_key = mk
+                    break
+        
+        if model_key:
+            if model_key not in lora_layers:
+                lora_layers[model_key] = {}
+            lora_layers[model_key][lora_type] = lora_weight
+    
+    return lora_layers
+
+
+def _apply_lora_to_weight(original_weight: torch.Tensor, 
+                          lora_A: torch.Tensor, 
+                          lora_B: torch.Tensor,
+                          alpha: float = None,
+                          strength: float = 1.0) -> torch.Tensor:
+    """
+    Apply LoRA weights to the original weight tensor.
+    
+    LoRA: W' = W + (B @ A) * (alpha / rank) * strength
+    Where A is (rank, in_features) and B is (out_features, rank)
+    """
+    device = original_weight.device
+    dtype = original_weight.dtype
+    
+    lora_A = lora_A.to(device=device, dtype=dtype)
+    lora_B = lora_B.to(device=device, dtype=dtype)
+    
+    # Get rank from LoRA matrices
+    rank = lora_A.shape[0] if lora_A.dim() >= 2 else lora_A.shape[-1]
+    
+    # Calculate scale
+    if alpha is None:
+        alpha = rank  # Default alpha equals rank
+    scale = (alpha / rank) * strength
+    
+    # Compute LoRA delta: B @ A
+    # Handle different tensor shapes
+    if lora_A.dim() == 2 and lora_B.dim() == 2:
+        # Standard Linear layer: A is (rank, in_features), B is (out_features, rank)
+        delta = lora_B @ lora_A
+    elif lora_A.dim() == 4 and lora_B.dim() == 4:
+        # Conv2d layer
+        delta = torch.nn.functional.conv2d(
+            lora_A.permute(1, 0, 2, 3), 
+            lora_B
+        ).permute(1, 0, 2, 3)
+    else:
+        # Try matrix multiplication for other cases
+        delta = lora_B @ lora_A
+    
+    # Ensure delta shape matches original weight
+    if delta.shape != original_weight.shape:
+        # Try to reshape or adjust
+        if delta.numel() == original_weight.numel():
+            delta = delta.view(original_weight.shape)
+        else:
+            print(f"  [WARNING] LoRA delta shape {delta.shape} doesn't match weight shape {original_weight.shape}")
+            return original_weight
+    
+    return original_weight + delta * scale
+
 
 def load_lora_weights(
     pipeline,
@@ -422,17 +566,21 @@ def load_lora_weights(
     adapter_name: Optional[str] = None,
 ) -> bool:
     """
-    Load LoRA weights into the pipeline (similar to ComfyUI's LoraLoaderModelOnly).
+    Load LoRA weights into the pipeline's transformer using ComfyUI-style direct weight patching.
+    
+    This approach works with any transformer model by directly modifying weights,
+    similar to how ComfyUI's LoraLoaderModelOnly node works.
     
     Args:
         pipeline: The diffusers pipeline to load LoRA into
-        lora_path: Path to LoRA file (.safetensors) or HuggingFace repo ID
+        lora_path: Path to LoRA file (.safetensors)
         lora_strength: LoRA strength/weight (0.0 to 2.0, default 0.8)
         adapter_name: Optional name for the adapter
     
     Returns:
         bool: True if LoRA was loaded successfully, False otherwise
     """
+    global _original_weights, _applied_loras
     script_dir = Path(__file__).parent.resolve()
     
     try:
@@ -459,46 +607,102 @@ def load_lora_weights(
                     candidate = script_dir / "loras" / lora_path
                     if candidate.exists():
                         lora_path_obj = candidate
-                    else:
-                        # Assume it's a HuggingFace repo ID
-                        lora_path_obj = None
+        
+        if not lora_path_obj or not lora_path_obj.exists():
+            print(f"  [ERROR] LoRA file not found: {lora_path}")
+            return False
+        
+        if not str(lora_path_obj).endswith('.safetensors'):
+            print(f"  [ERROR] Only .safetensors LoRA files are supported: {lora_path}")
+            return False
         
         # Clamp strength to valid range
         lora_strength = max(0.0, min(2.0, lora_strength))
         
-        if lora_path_obj and lora_path_obj.exists() and lora_path_obj.is_file():
-            # Load from local file
-            print(f"  Loading LoRA from local file: {lora_path_obj}")
-            
-            # Check if it's a safetensors file
-            if str(lora_path_obj).endswith('.safetensors'):
-                pipeline.load_lora_weights(
-                    str(lora_path_obj.parent),
-                    weight_name=lora_path_obj.name,
-                    adapter_name=adapter_name,
-                )
-            else:
-                pipeline.load_lora_weights(
-                    str(lora_path_obj),
-                    adapter_name=adapter_name,
-                )
-        else:
-            # Try loading from HuggingFace
-            print(f"  Loading LoRA from HuggingFace: {lora_path}")
-            pipeline.load_lora_weights(
-                lora_path,
-                adapter_name=adapter_name,
-            )
+        # Use adapter_name or generate a default one
+        effective_adapter_name = adapter_name or "default"
         
-        # Set the LoRA scale (strength)
-        if adapter_name:
-            pipeline.set_adapters([adapter_name], adapter_weights=[lora_strength])
-            print(f"  [OK] LoRA '{adapter_name}' loaded with strength {lora_strength}")
-        else:
-            # For single LoRA without adapter name, use fuse_lora with scale
-            pipeline.fuse_lora(lora_scale=lora_strength)
-            print(f"  [OK] LoRA loaded and fused with strength {lora_strength}")
+        # Get the model to apply LoRA to
+        has_transformer = hasattr(pipeline, 'transformer') and pipeline.transformer is not None
+        has_unet = hasattr(pipeline, 'unet') and pipeline.unet is not None
         
+        if has_transformer:
+            model = pipeline.transformer
+            model_name = "transformer"
+        elif has_unet:
+            model = pipeline.unet
+            model_name = "unet"
+        else:
+            raise ValueError("Pipeline has neither transformer nor unet - cannot load LoRA")
+        
+        print(f"  Loading LoRA from: {lora_path_obj}")
+        print(f"  Applying to {model_name} with strength {lora_strength}")
+        
+        # Load LoRA state dict
+        lora_state_dict = _load_safetensors_lora(lora_path_obj)
+        print(f"  LoRA contains {len(lora_state_dict)} keys")
+        
+        # Get model state dict
+        model_state_dict = model.state_dict()
+        
+        # Map LoRA keys to model keys
+        lora_layers = _map_lora_keys_to_model(lora_state_dict, model_state_dict)
+        print(f"  Mapped {len(lora_layers)} LoRA layers to model")
+        
+        if len(lora_layers) == 0:
+            print(f"  [WARNING] No matching layers found between LoRA and model")
+            print(f"  LoRA key examples: {list(lora_state_dict.keys())[:5]}")
+            print(f"  Model key examples: {list(model_state_dict.keys())[:5]}")
+            return False
+        
+        # Store original weights if not already stored
+        if effective_adapter_name not in _original_weights:
+            _original_weights[effective_adapter_name] = {}
+        
+        # Apply LoRA to each matched layer
+        applied_count = 0
+        with torch.no_grad():
+            for model_key, lora_data in lora_layers.items():
+                if 'A' not in lora_data or 'B' not in lora_data:
+                    continue
+                
+                # Get current weight
+                parts = model_key.split('.')
+                param = model
+                for part in parts:
+                    param = getattr(param, part)
+                
+                original_weight = param.data.clone()
+                
+                # Store original weight if first time
+                if model_key not in _original_weights[effective_adapter_name]:
+                    _original_weights[effective_adapter_name][model_key] = original_weight.clone()
+                
+                # Get alpha if present
+                alpha = None
+                if 'alpha' in lora_data:
+                    alpha = lora_data['alpha'].item() if lora_data['alpha'].numel() == 1 else float(lora_data['alpha'])
+                
+                # Apply LoRA
+                new_weight = _apply_lora_to_weight(
+                    original_weight, 
+                    lora_data['A'], 
+                    lora_data['B'],
+                    alpha=alpha,
+                    strength=lora_strength
+                )
+                
+                param.data.copy_(new_weight)
+                applied_count += 1
+        
+        # Track applied LoRA
+        _applied_loras[effective_adapter_name] = {
+            'path': str(lora_path_obj),
+            'strength': lora_strength,
+            'keys': list(lora_layers.keys())
+        }
+        
+        print(f"  [OK] LoRA '{effective_adapter_name}' applied to {applied_count} layers with strength {lora_strength}")
         return True
         
     except Exception as e:
@@ -508,9 +712,100 @@ def load_lora_weights(
         return False
 
 
+def unload_lora_weights(pipeline, adapter_name: str = "default") -> bool:
+    """
+    Unload LoRA weights by restoring original model weights.
+    
+    Args:
+        pipeline: The diffusers pipeline
+        adapter_name: Name of the adapter to unload
+    
+    Returns:
+        bool: True if successful
+    """
+    global _original_weights, _applied_loras
+    
+    if adapter_name not in _original_weights:
+        print(f"  [WARNING] No LoRA named '{adapter_name}' is loaded")
+        return False
+    
+    # Get the model
+    has_transformer = hasattr(pipeline, 'transformer') and pipeline.transformer is not None
+    has_unet = hasattr(pipeline, 'unet') and pipeline.unet is not None
+    
+    if has_transformer:
+        model = pipeline.transformer
+    elif has_unet:
+        model = pipeline.unet
+    else:
+        return False
+    
+    # Restore original weights
+    restored_count = 0
+    with torch.no_grad():
+        for model_key, original_weight in _original_weights[adapter_name].items():
+            try:
+                parts = model_key.split('.')
+                param = model
+                for part in parts:
+                    param = getattr(param, part)
+                param.data.copy_(original_weight)
+                restored_count += 1
+            except Exception as e:
+                print(f"  [WARNING] Could not restore weight for {model_key}: {e}")
+    
+    # Clean up tracking
+    del _original_weights[adapter_name]
+    if adapter_name in _applied_loras:
+        del _applied_loras[adapter_name]
+    
+    print(f"  [OK] Unloaded LoRA '{adapter_name}', restored {restored_count} layers")
+    return True
+
+
+def set_lora_strength(pipeline, adapter_name: str, strength: float) -> bool:
+    """
+    Change the strength of an already-loaded LoRA by re-applying with new strength.
+    
+    Args:
+        pipeline: The diffusers pipeline
+        adapter_name: Name of the adapter
+        strength: New strength value
+    
+    Returns:
+        bool: True if successful
+    """
+    global _applied_loras
+    
+    if adapter_name not in _applied_loras:
+        print(f"  [WARNING] No LoRA named '{adapter_name}' is loaded")
+        return False
+    
+    lora_info = _applied_loras[adapter_name]
+    
+    # First unload the current LoRA
+    unload_lora_weights(pipeline, adapter_name)
+    
+    # Then reload with new strength
+    return load_lora_weights(
+        pipeline, 
+        lora_info['path'], 
+        lora_strength=strength, 
+        adapter_name=adapter_name
+    )
+
+
+def get_loaded_loras() -> Dict[str, Dict]:
+    """Get information about currently loaded LoRAs."""
+    return dict(_applied_loras)
+
+
 def load_multiple_loras(pipeline, lora_configs: List[Dict]) -> int:
     """
-    Load multiple LoRAs into the pipeline.
+    Load multiple LoRAs into the pipeline's transformer or unet.
+    
+    With ComfyUI-style direct weight patching, multiple LoRAs are applied
+    sequentially to the model weights. Each LoRA modifies the weights directly.
     
     Args:
         pipeline: The diffusers pipeline
@@ -523,8 +818,6 @@ def load_multiple_loras(pipeline, lora_configs: List[Dict]) -> int:
         return 0
     
     loaded_count = 0
-    adapter_names = []
-    adapter_weights = []
     
     for i, lora_config in enumerate(lora_configs):
         lora_path = lora_config.get("path")
@@ -544,16 +837,9 @@ def load_multiple_loras(pipeline, lora_configs: List[Dict]) -> int:
         
         if success:
             loaded_count += 1
-            adapter_names.append(adapter_name)
-            adapter_weights.append(lora_strength)
     
-    # If multiple LoRAs were loaded, set all adapters with their weights
-    if len(adapter_names) > 1:
-        try:
-            pipeline.set_adapters(adapter_names, adapter_weights=adapter_weights)
-            print(f"  [OK] Set {len(adapter_names)} adapters with custom weights")
-        except Exception as e:
-            print(f"  [WARNING] Could not set multi-adapter weights: {e}")
+    if loaded_count > 0:
+        print(f"  [OK] Successfully loaded {loaded_count} LoRA(s)")
     
     return loaded_count
 
@@ -1367,23 +1653,20 @@ async def list_loaded_loras():
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
-        # Try to get list of active adapters
-        if hasattr(pipe, 'get_active_adapters'):
-            active = pipe.get_active_adapters()
+        # Use our custom tracking for ComfyUI-style loaded LoRAs
+        loaded_loras = get_loaded_loras()
+        lora_names = list(loaded_loras.keys())
+        
+        if lora_names:
+            details = [f"{name} (strength: {loaded_loras[name]['strength']})" for name in lora_names]
             return LoraInfoResponse(
-                loaded_loras=list(active) if active else [],
-                message=f"Found {len(active) if active else 0} active LoRA adapter(s)"
-            )
-        elif hasattr(pipe, 'get_list_adapters'):
-            adapters = pipe.get_list_adapters()
-            return LoraInfoResponse(
-                loaded_loras=list(adapters.keys()) if adapters else [],
-                message=f"Found {len(adapters) if adapters else 0} loaded LoRA adapter(s)"
+                loaded_loras=lora_names,
+                message=f"Found {len(lora_names)} loaded LoRA(s): {', '.join(details)}"
             )
         else:
             return LoraInfoResponse(
                 loaded_loras=[],
-                message="LoRA adapter listing not available for this pipeline"
+                message="No LoRAs currently loaded"
             )
     except Exception as e:
         return LoraInfoResponse(
@@ -1435,9 +1718,11 @@ async def load_lora_endpoint(request: LoadLoraRequest):
         )
 
 @app.post("/lora/unload")
-async def unload_loras():
+async def unload_loras(adapter_name: Optional[str] = None):
     """
-    Unload all LoRAs and restore the base model.
+    Unload LoRA(s) and restore the base model weights.
+    If adapter_name is specified, only that LoRA is unloaded.
+    Otherwise, all LoRAs are unloaded.
     """
     if pipe is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
@@ -1450,13 +1735,35 @@ async def unload_loras():
         )
     
     try:
-        # Try to unfuse and unload LoRAs
-        if hasattr(pipe, 'unfuse_lora'):
-            pipe.unfuse_lora()
-        if hasattr(pipe, 'unload_lora_weights'):
-            pipe.unload_lora_weights()
+        loaded_loras = get_loaded_loras()
         
-        return {"message": "LoRAs unloaded successfully", "status": "success"}
+        if not loaded_loras:
+            return {"message": "No LoRAs are currently loaded", "status": "success"}
+        
+        if adapter_name:
+            # Unload specific LoRA
+            if adapter_name not in loaded_loras:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"LoRA '{adapter_name}' is not loaded"
+                )
+            success = unload_lora_weights(pipe, adapter_name)
+            if success:
+                return {"message": f"LoRA '{adapter_name}' unloaded successfully", "status": "success"}
+            else:
+                raise HTTPException(status_code=500, detail=f"Failed to unload LoRA '{adapter_name}'")
+        else:
+            # Unload all LoRAs
+            unloaded = []
+            for name in list(loaded_loras.keys()):
+                if unload_lora_weights(pipe, name):
+                    unloaded.append(name)
+            return {
+                "message": f"Unloaded {len(unloaded)} LoRA(s): {', '.join(unloaded)}",
+                "status": "success"
+            }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -1464,28 +1771,47 @@ async def unload_loras():
         )
 
 @app.post("/lora/set-strength")
-async def set_lora_strength(adapter_name: str, strength: float = 0.8):
+async def set_lora_strength_endpoint(adapter_name: str, strength: float = 0.8):
     """
     Adjust the strength of a loaded LoRA adapter.
+    This unloads and reloads the LoRA with the new strength.
     """
     if pipe is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    # Check if there are active generations
+    if metrics.active_generations > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot modify LoRA while generations are in progress. Please wait."
+        )
     
     # Clamp strength
     strength = max(0.0, min(2.0, strength))
     
     try:
-        if hasattr(pipe, 'set_adapters'):
-            pipe.set_adapters([adapter_name], adapter_weights=[strength])
+        loaded_loras = get_loaded_loras()
+        
+        if adapter_name not in loaded_loras:
+            raise HTTPException(
+                status_code=404,
+                detail=f"LoRA '{adapter_name}' is not loaded"
+            )
+        
+        success = set_lora_strength(pipe, adapter_name, strength)
+        
+        if success:
             return {
                 "message": f"Set LoRA '{adapter_name}' strength to {strength}",
                 "status": "success"
             }
         else:
             raise HTTPException(
-                status_code=400,
-                detail="Setting adapter strength not supported for this pipeline"
+                status_code=500,
+                detail=f"Failed to set LoRA strength"
             )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
