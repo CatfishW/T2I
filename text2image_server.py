@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 ULTRA-HIGH-PERFORMANCE Text-to-Image Server
@@ -94,7 +94,7 @@ if hasattr(torch, 'set_float32_matmul_precision'):
     try:
         torch.set_float32_matmul_precision('high')  # Options: 'highest', 'high', 'medium'
     except Exception as e:
-        print(f"⚠ Could not set float32 matmul precision: {e}")
+        print(f" Could not set float32 matmul precision: {e}")
 
 # Optimize CUDA memory allocation
 if torch.cuda.is_available():
@@ -230,21 +230,21 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
             explicit_path_candidate = (script_dir / explicit_path).resolve()
             if explicit_path_candidate.exists():
                 explicit_path = str(explicit_path_candidate)
-                print(f"ℹ Resolved relative path to: {explicit_path}")
+                print(f" Resolved relative path to: {explicit_path}")
             else:
                 # Try relative to current working directory
                 explicit_path_candidate = Path(explicit_path).expanduser().resolve()
                 if explicit_path_candidate.exists():
                     explicit_path = str(explicit_path_candidate)
-                    print(f"ℹ Resolved relative path (from CWD) to: {explicit_path}")
+                    print(f" Resolved relative path (from CWD) to: {explicit_path}")
                 else:
                     # Try without resolving (in case path exists but resolve() fails in WSL)
                     explicit_path_candidate = script_dir / explicit_path
                     if explicit_path_candidate.exists():
                         explicit_path = str(explicit_path_candidate)
-                        print(f"ℹ Found path (non-resolved): {explicit_path}")
+                        print(f" Found path (non-resolved): {explicit_path}")
                     else:
-                        print(f"⚠ Warning: Explicit local_path '{explicit_path}' not found at:")
+                        print(f" Warning: Explicit local_path '{explicit_path}' not found at:")
                         print(f"  - {script_dir / explicit_path}")
                         print(f"  - {Path('.').resolve() / explicit_path}")
                         print(f"  Will continue searching other locations...")
@@ -262,12 +262,12 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
                             if snapshot.is_dir():
                                 # Check for model_index.json (required for diffusers pipelines)
                                 if (snapshot / "model_index.json").exists():
-                                    print(f"✓ Found explicit local model path (with snapshots): {snapshot}")
+                                    print(f" Found explicit local model path (with snapshots): {snapshot}")
                                     return str(snapshot.resolve())
                     
                     # Check for model_index.json directly (diffusers pipeline format)
                     if (explicit_path_obj / "model_index.json").exists():
-                        print(f"✓ Found explicit local model path (model_index.json found): {explicit_path_obj}")
+                        print(f" Found explicit local model path (model_index.json found): {explicit_path_obj}")
                         return str(explicit_path_obj.resolve())
                     
                     # Check for common model files as fallback
@@ -278,12 +278,12 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
                                  list(explicit_path_obj.glob("*.pt"))
                     # Also check for config.json as fallback (older format)
                     if model_files or (explicit_path_obj / "config.json").exists():
-                        print(f"✓ Found explicit local model path: {explicit_path_obj}")
+                        print(f" Found explicit local model path: {explicit_path_obj}")
                         return str(explicit_path_obj.resolve())
                 else:
                     # Single file path
                     if explicit_path_obj.exists():
-                        print(f"✓ Found explicit local model file: {explicit_path_obj}")
+                        print(f" Found explicit local model file: {explicit_path_obj}")
                         return str(explicit_path_obj.resolve())
     
     # 2. Check script directory and current working directory for model folders
@@ -336,7 +336,7 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
                         if snapshot.is_dir():
                             # Check for model_index.json (required for diffusers pipelines)
                             if (snapshot / "model_index.json").exists():
-                                print(f"✓ Found local model in {search_dir.name}/{folder_name}/snapshots: {snapshot.name}")
+                                print(f" Found local model in {search_dir.name}/{folder_name}/snapshots: {snapshot.name}")
                                 return str(snapshot.resolve())
                 except (OSError, PermissionError):
                     pass
@@ -344,7 +344,7 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
             # Check for model_index.json directly (diffusers pipeline format)
             try:
                 if (folder_path / "model_index.json").exists():
-                    print(f"✓ Found local model in {search_dir.name}/{folder_name} (model_index.json found)")
+                    print(f" Found local model in {search_dir.name}/{folder_name} (model_index.json found)")
                     return str(folder_path.resolve())
             except (OSError, PermissionError):
                 pass
@@ -358,7 +358,7 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
                 # Also check for config.json (older format)
                 config_file = folder_path / "config.json"
                 if model_files or config_file.exists():
-                    print(f"✓ Found local model in {search_dir.name}/{folder_name}")
+                    print(f" Found local model in {search_dir.name}/{folder_name}")
                     return str(folder_path.resolve())
             except (OSError, PermissionError):
                 continue
@@ -386,7 +386,7 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
                     if snapshot.is_dir():
                         # Check for model_index.json (required for diffusers pipelines)
                         if (snapshot / "model_index.json").exists():
-                            print(f"✓ Found local model in HuggingFace cache: {snapshot}")
+                            print(f" Found local model in HuggingFace cache: {snapshot}")
                             return str(snapshot)
     
     # 4. Check ./models/ directory (both script dir and current dir)
@@ -395,15 +395,15 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
         if models_dir.exists() and models_dir.is_dir():
             # Check for model_index.json first (diffusers format)
             if (models_dir / "model_index.json").exists():
-                print(f"✓ Found local model in {base_dir.name}/models/{cache_name} (model_index.json found)")
+                print(f" Found local model in {base_dir.name}/models/{cache_name} (model_index.json found)")
                 return str(models_dir.resolve())
             # Fallback to config.json
             elif (models_dir / "config.json").exists():
-                print(f"✓ Found local model in {base_dir.name}/models/{cache_name}")
+                print(f" Found local model in {base_dir.name}/models/{cache_name}")
                 return str(models_dir.resolve())
     
     # 5. Debug output if nothing found
-    print(f"ℹ Local model search locations checked:")
+    print(f" Local model search locations checked:")
     print(f"  - Script directory: {script_dir}")
     print(f"  - Current directory: {Path('.').resolve()}")
     print(f"  - Explicit path: {explicit_path or 'None'}")
@@ -591,7 +591,7 @@ ENABLE_TORCH_COMPILE_REQUESTED = config["model"].get("enable_torch_compile", Tru
 if IS_WINDOWS:
     if ENABLE_COMPILATION_REQUESTED or ENABLE_TORCH_COMPILE_REQUESTED:
         print("=" * 60)
-        print("⚠ WARNING: Model compilation is disabled on Windows.")
+        print(" WARNING: Model compilation is disabled on Windows.")
         print("  torch.compile() and transformer.compile() have compatibility")
         print("  issues on Windows systems.")
         print("  The server will run without compilation (still fast with")
@@ -605,7 +605,7 @@ ENABLE_COMPILATION = ENABLE_COMPILATION_REQUESTED and TRITON_AVAILABLE and not I
 
 if ENABLE_COMPILATION_REQUESTED and not TRITON_AVAILABLE and not IS_WINDOWS:
     print("=" * 60)
-    print("⚠ WARNING: Model compilation requested but Triton is not installed.")
+    print(" WARNING: Model compilation requested but Triton is not installed.")
     print("  Compilation will be disabled automatically.")
     print("  To enable compilation, install Triton:")
     print("    pip install triton")
@@ -682,7 +682,7 @@ async def lifespan(app: FastAPI):
     print("Optimized for MAXIMUM SPEED (faster than ComfyUI)")
     print("=" * 60)
     if IS_WINDOWS:
-        print(f"⚠ Running on Windows - Compilation disabled (Windows compatibility)")
+        print(f" Running on Windows - Compilation disabled (Windows compatibility)")
     print(f"Model: {MODEL_NAME}")
     print(f"Max Concurrent Generations: {MAX_CONCURRENT_GENERATIONS}")
     print(f"Max Queue Size: {MAX_QUEUE_SIZE}")
@@ -714,18 +714,18 @@ async def lifespan(app: FastAPI):
     # Startup
     print("\nLoading model...")
     if IS_WSL:
-        print("ℹ Running in WSL - Using enhanced path resolution")
+        print(" Running in WSL - Using enhanced path resolution")
     try:
         # Try to find local model first
         print(f"Searching for local model (explicit path: {MODEL_LOCAL_PATH or 'None'})...")
         local_model_path = find_local_model(MODEL_NAME, MODEL_LOCAL_PATH)
         
         if local_model_path:
-            print(f"✓ Using local model from: {local_model_path}")
+            print(f" Using local model from: {local_model_path}")
             model_path = local_model_path
             use_local_only = True
         else:
-            print(f"⚠ Local model not found, will download from HuggingFace: {MODEL_NAME}")
+            print(f" Local model not found, will download from HuggingFace: {MODEL_NAME}")
             model_path = MODEL_NAME
             use_local_only = False
         
@@ -740,48 +740,48 @@ async def lifespan(app: FastAPI):
         # Memory optimization: CPU offloading (must be done before moving to CUDA)
         if ENABLE_SEQUENTIAL_CPU_OFFLOAD:
             pipe.enable_sequential_cpu_offload()
-            print("✓ Sequential CPU offloading enabled (most memory efficient)")
+            print(" Sequential CPU offloading enabled (most memory efficient)")
         elif ENABLE_CPU_OFFLOAD:
             pipe.enable_model_cpu_offload()
-            print("✓ CPU offloading enabled")
+            print(" CPU offloading enabled")
         else:
             pipe.to("cuda")
-            print("✓ Model loaded on CUDA")
+            print(" Model loaded on CUDA")
         
         # VAE optimizations
         if ENABLE_VAE_TILING:
             try:
                 # VAE tiling is better than slicing for large images - more efficient
                 pipe.enable_vae_tiling()
-                print("✓ VAE tiling enabled (memory efficient for large images)")
+                print(" VAE tiling enabled (memory efficient for large images)")
             except Exception as e:
                 # Fallback to slicing if tiling not available
                 if ENABLE_VAE_SLICING:
                     try:
                         pipe.enable_vae_slicing()
-                        print("✓ VAE slicing enabled (fallback)")
+                        print(" VAE slicing enabled (fallback)")
                     except:
-                        print(f"⚠ VAE optimizations not available: {e}")
+                        print(f" VAE optimizations not available: {e}")
                 else:
-                    print(f"⚠ VAE tiling not available: {e}")
+                    print(f" VAE tiling not available: {e}")
         elif ENABLE_VAE_SLICING:
             # Only use slicing if tiling is disabled
             try:
                 pipe.enable_vae_slicing()
-                print("✓ VAE slicing enabled (reduces VRAM usage)")
+                print(" VAE slicing enabled (reduces VRAM usage)")
             except Exception as e:
-                print(f"⚠ VAE slicing not available: {e}")
+                print(f" VAE slicing not available: {e}")
         
         # Attention slicing - only enable if VRAM is constrained (slows down inference)
         if ENABLE_ATTENTION_SLICING:
             try:
                 # Use larger slice size for better speed (8 is good balance)
                 pipe.enable_attention_slicing(slice_size=8)
-                print("✓ Attention slicing enabled (slice_size=8 for speed)")
+                print(" Attention slicing enabled (slice_size=8 for speed)")
             except Exception as e:
-                print(f"⚠ Attention slicing not available: {e}")
+                print(f" Attention slicing not available: {e}")
         else:
-            print("✓ Attention slicing disabled (maximum speed mode)")
+            print(" Attention slicing disabled (maximum speed mode)")
         
         # Load LoRA weights if configured
         if LORA_ENABLED and LORA_CONFIGS:
@@ -808,40 +808,40 @@ async def lifespan(app: FastAPI):
             for backend_name, backend_desc in attention_backends:
                 try:
                     pipe.transformer.set_attention_backend(backend_name)
-                    print(f"✓ {backend_desc} enabled")
+                    print(f" {backend_desc} enabled")
                     attention_backend_set = True
                     break
                 except Exception as e:
                     continue
             
             if not attention_backend_set:
-                print("⚠ No optimized attention backend available, using default")
+                print(" No optimized attention backend available, using default")
         elif ENABLE_FLASH_ATTENTION:
             # Simple fallback if optimization is disabled
             try:
                 try:
                     pipe.transformer.set_attention_backend("_flash_3")
-                    print("✓ Flash Attention 3 enabled")
+                    print(" Flash Attention 3 enabled")
                 except:
                     pipe.transformer.set_attention_backend("flash")
-                    print("✓ Flash Attention 2 enabled")
+                    print(" Flash Attention 2 enabled")
             except Exception as e:
-                print(f"⚠ Flash Attention not available: {e}")
+                print(f" Flash Attention not available: {e}")
         
         # Modern PyTorch 2.0+ compilation (torch.compile) - much faster than transformer.compile()
         # Skip compilation on Windows (compatibility issues)
         if IS_WINDOWS:
-            print("\n⚠ Skipping torch.compile (not supported on Windows)")
+            print("\n Skipping torch.compile (not supported on Windows)")
             # Try torch.jit.script as alternative for Windows (works but less effective)
             if ENABLE_TORCH_JIT and hasattr(torch.jit, 'script'):
                 print("  Attempting torch.jit.script as Windows-compatible alternative...")
                 try:
                     # Note: torch.jit.script may not work with all transformer models
                     # This is experimental and may fail, which is fine
-                    print("  ⚠ torch.jit.script is experimental and may not work with all models")
+                    print("   torch.jit.script is experimental and may not work with all models")
                     print("  Continuing without JIT compilation...")
                 except Exception as e:
-                    print(f"  ⚠ torch.jit.script not applicable: {e}")
+                    print(f"   torch.jit.script not applicable: {e}")
             print("  Performance will still be excellent with Flash Attention and other optimizations")
         elif ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
             print(f"\nCompiling transformer with torch.compile (mode: {TORCH_COMPILE_MODE})...")
@@ -854,26 +854,26 @@ async def lifespan(app: FastAPI):
                     fullgraph=False,  # Allow graph breaks for flexibility
                     dynamic=False,  # Static shapes for better optimization
                 )
-                print("✓ torch.compile() enabled - EXPECT SIGNIFICANT SPEEDUP!")
+                print(" torch.compile() enabled - EXPECT SIGNIFICANT SPEEDUP!")
             except Exception as e:
-                print(f"⚠ torch.compile() failed: {e}")
+                print(f" torch.compile() failed: {e}")
                 print("  Falling back to legacy compilation or no compilation...")
                 # Try legacy compilation as fallback
                 if ENABLE_COMPILATION:
                     try:
                         pipe.transformer.compile()
-                        print("✓ Legacy compilation enabled (fallback)")
+                        print(" Legacy compilation enabled (fallback)")
                     except Exception as e2:
-                        print(f"⚠ Legacy compilation also failed: {e2}")
+                        print(f" Legacy compilation also failed: {e2}")
                         ENABLE_COMPILATION = False
         elif ENABLE_COMPILATION:
             # Legacy compilation (slower than torch.compile but still helps)
             print("Compiling model with legacy method (first run will be slower)...")
             try:
                 pipe.transformer.compile()
-                print("✓ Legacy model compilation enabled")
+                print(" Legacy model compilation enabled")
             except Exception as e:
-                print(f"⚠ Model compilation failed: {e}")
+                print(f" Model compilation failed: {e}")
                 print("  Continuing without compilation...")
                 ENABLE_COMPILATION = False
         
@@ -911,11 +911,11 @@ async def lifespan(app: FastAPI):
             except:
                 pass  # Second warmup is optional
             
-            print("✓ Model warmed up and ready for fast inference!")
+            print(" Model warmed up and ready for fast inference!")
             del warmup_image  # Free memory
             torch.cuda.empty_cache()
         except Exception as e:
-            print(f"⚠ Warmup failed (non-critical, will warmup on first request): {e}")
+            print(f" Warmup failed (non-critical, will warmup on first request): {e}")
         
         print("\n" + "=" * 60)
         print("Server ready! Listening on http://0.0.0.0:8010")
@@ -923,10 +923,10 @@ async def lifespan(app: FastAPI):
         
         # Start queue worker
         queue_worker_task = asyncio.create_task(queue_worker())
-        print("✓ Queue worker started")
+        print(" Queue worker started")
         
     except Exception as e:
-        error_msg = f"\n✗ Error loading model: {e}"
+        error_msg = f"\n Error loading model: {e}"
         print(error_msg)
         import traceback
         traceback.print_exc()
@@ -958,7 +958,7 @@ async def lifespan(app: FastAPI):
             await queue_worker_task
         except asyncio.CancelledError:
             pass
-        print("✓ Queue worker stopped")
+        print(" Queue worker stopped")
     
     # Clear pending requests
     for req_id, queued_req in list(pending_requests.items()):
@@ -971,7 +971,7 @@ async def lifespan(app: FastAPI):
     if pipe is not None:
         del pipe
         torch.cuda.empty_cache()
-        print("✓ Model unloaded, CUDA cache cleared")
+        print(" Model unloaded, CUDA cache cleared")
 
 # ============================================================================
 # FastAPI App
@@ -1760,7 +1760,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.workers > 1:
-        print(f"⚠ Warning: Multiple workers ({args.workers}) may cause GPU memory issues.")
+        print(f" Warning: Multiple workers ({args.workers}) may cause GPU memory issues.")
         print("  Each worker loads its own model instance.")
         print("  Recommended: Use 1 worker with higher MAX_CONCURRENT_GENERATIONS")
     
