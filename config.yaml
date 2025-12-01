@@ -38,7 +38,7 @@ model:
   # This provides significant speedup after first run (compilation happens on warmup)
   # Options: "default", "reduce-overhead", "max-autotune"
   # "reduce-overhead" is recommended for best speed/compilation time balance
-  enable_torch_compile: true
+  enable_torch_compile: false
   torch_compile_mode: "reduce-overhead"
   
   # Legacy model compilation (fallback if torch.compile fails)
@@ -79,6 +79,27 @@ model:
   # CUDA graphs for repeated inference patterns (experimental)
   # Can provide additional speedup for identical request patterns
   enable_cuda_graphs: false
+
+# ============================================================================
+# LoRA Settings
+# ============================================================================
+lora:
+  # Enable LoRA loading
+  enabled: false
+  
+  # List of LoRAs to load
+  # Each LoRA entry should have:
+  #   - path: Path to LoRA file (.safetensors) or HuggingFace repo ID
+  #   - strength: LoRA strength/weight (0.0 to 2.0, default 0.8)
+  #   - adapter_name: Optional name for the adapter (default: lora_0, lora_1, etc.)
+  # Example:
+  # loras:
+  #   - path: "./loras/my_lora.safetensors"
+  #     strength: 0.8
+  #   - path: "username/my-lora-repo"
+  #     strength: 0.6
+  #     adapter_name: "style_lora"
+  loras: []
 
 # ============================================================================
 # Storage Settings

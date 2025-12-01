@@ -151,6 +151,10 @@ def load_config(config_path: str = "config.yaml") -> Dict:
             "save_images": False,
             "image_format": "jpeg",  # "jpeg" for faster transmission, "png" for lossless
             "jpeg_quality": 90  # 1-100, higher = better quality but larger files
+        },
+        "lora": {
+            "enabled": False,
+            "loras": []  # List of {path, strength, adapter_name} dicts
         }
     }
     
@@ -166,6 +170,8 @@ def load_config(config_path: str = "config.yaml") -> Dict:
                 config["model"].update(user_config["model"])
             if "storage" in user_config:
                 config["storage"].update(user_config["storage"])
+            if "lora" in user_config:
+                config["lora"].update(user_config["lora"])
             return config
         except Exception as e:
             print(f"Warning: Failed to load config.yaml: {e}. Using defaults.")
@@ -403,6 +409,153 @@ def find_local_model(model_name: str, explicit_path: Optional[str] = None) -> Op
     
     return None
 
+# ============================================================================
+# LoRA Loader Function
+# ============================================================================
+
+def load_lora_weights(
+    pipeline,
+    lora_path: str,
+    lora_strength: float = 0.8,
+    adapter_name: Optional[str] = None,
+) -> bool:
+    """
+    Load LoRA weights into the pipeline (similar to ComfyUI's LoraLoaderModelOnly).
+    
+    Args:
+        pipeline: The diffusers pipeline to load LoRA into
+        lora_path: Path to LoRA file (.safetensors) or HuggingFace repo ID
+        lora_strength: LoRA strength/weight (0.0 to 2.0, default 0.8)
+        adapter_name: Optional name for the adapter
+    
+    Returns:
+        bool: True if LoRA was loaded successfully, False otherwise
+    """
+    script_dir = Path(__file__).parent.resolve()
+    
+    try:
+        # Resolve the LoRA path
+        lora_path_obj = Path(lora_path)
+        
+        # Handle relative paths
+        if not lora_path_obj.is_absolute():
+            # Remove leading ./ if present
+            if str(lora_path).startswith("./"):
+                lora_path = str(lora_path)[2:]
+            
+            # Try relative to script directory first
+            candidate = script_dir / lora_path
+            if candidate.exists():
+                lora_path_obj = candidate
+            else:
+                # Try relative to current directory
+                candidate = Path(lora_path).resolve()
+                if candidate.exists():
+                    lora_path_obj = candidate
+                else:
+                    # Try in a 'loras' subdirectory
+                    candidate = script_dir / "loras" / lora_path
+                    if candidate.exists():
+                        lora_path_obj = candidate
+                    else:
+                        # Assume it's a HuggingFace repo ID
+                        lora_path_obj = None
+        
+        # Clamp strength to valid range
+        lora_strength = max(0.0, min(2.0, lora_strength))
+        
+        if lora_path_obj and lora_path_obj.exists() and lora_path_obj.is_file():
+            # Load from local file
+            print(f"  Loading LoRA from local file: {lora_path_obj}")
+            
+            # Check if it's a safetensors file
+            if str(lora_path_obj).endswith('.safetensors'):
+                pipeline.load_lora_weights(
+                    str(lora_path_obj.parent),
+                    weight_name=lora_path_obj.name,
+                    adapter_name=adapter_name,
+                )
+            else:
+                pipeline.load_lora_weights(
+                    str(lora_path_obj),
+                    adapter_name=adapter_name,
+                )
+        else:
+            # Try loading from HuggingFace
+            print(f"  Loading LoRA from HuggingFace: {lora_path}")
+            pipeline.load_lora_weights(
+                lora_path,
+                adapter_name=adapter_name,
+            )
+        
+        # Set the LoRA scale (strength)
+        if adapter_name:
+            pipeline.set_adapters([adapter_name], adapter_weights=[lora_strength])
+            print(f"  ✓ LoRA '{adapter_name}' loaded with strength {lora_strength}")
+        else:
+            # For single LoRA without adapter name, use fuse_lora with scale
+            pipeline.fuse_lora(lora_scale=lora_strength)
+            print(f"  ✓ LoRA loaded and fused with strength {lora_strength}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"  ✗ Failed to load LoRA from '{lora_path}': {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def load_multiple_loras(pipeline, lora_configs: List[Dict]) -> int:
+    """
+    Load multiple LoRAs into the pipeline.
+    
+    Args:
+        pipeline: The diffusers pipeline
+        lora_configs: List of dicts with keys: path, strength, adapter_name (optional)
+    
+    Returns:
+        int: Number of LoRAs successfully loaded
+    """
+    if not lora_configs:
+        return 0
+    
+    loaded_count = 0
+    adapter_names = []
+    adapter_weights = []
+    
+    for i, lora_config in enumerate(lora_configs):
+        lora_path = lora_config.get("path")
+        if not lora_path:
+            print(f"  ⚠ LoRA config {i} missing 'path', skipping")
+            continue
+        
+        lora_strength = float(lora_config.get("strength", 0.8))
+        adapter_name = lora_config.get("adapter_name", f"lora_{i}")
+        
+        success = load_lora_weights(
+            pipeline,
+            lora_path,
+            lora_strength=lora_strength,
+            adapter_name=adapter_name,
+        )
+        
+        if success:
+            loaded_count += 1
+            adapter_names.append(adapter_name)
+            adapter_weights.append(lora_strength)
+    
+    # If multiple LoRAs were loaded, set all adapters with their weights
+    if len(adapter_names) > 1:
+        try:
+            pipeline.set_adapters(adapter_names, adapter_weights=adapter_weights)
+            print(f"  ✓ Set {len(adapter_names)} adapters with custom weights")
+        except Exception as e:
+            print(f"  ⚠ Could not set multi-adapter weights: {e}")
+    
+    return loaded_count
+
+
 # Load configuration
 config = load_config()
 
@@ -414,6 +567,10 @@ REQUEST_TIMEOUT = config["concurrency"]["request_timeout"]
 # Model settings
 MODEL_NAME = config["model"]["name"]
 MODEL_LOCAL_PATH = config["model"].get("local_path")  # Optional explicit local path
+
+# LoRA settings
+LORA_ENABLED = config.get("lora", {}).get("enabled", False)
+LORA_CONFIGS = config.get("lora", {}).get("loras", [])
 dtype_str = config["model"]["torch_dtype"].lower()
 if dtype_str == "bfloat16":
     TORCH_DTYPE = torch.bfloat16
@@ -542,6 +699,7 @@ async def lifespan(app: FastAPI):
     print(f"Sequential CPU Offloading: {ENABLE_SEQUENTIAL_CPU_OFFLOAD}")
     print(f"Fast Image Encoding: {ENABLE_FAST_IMAGE_ENCODING}")
     print(f"Attention Backend Optimization: {ENABLE_ATTENTION_BACKEND_OPTIMIZATION}")
+    print(f"LoRA Loading: {LORA_ENABLED} ({len(LORA_CONFIGS)} configured)")
     # Show float32 matmul precision if available
     if hasattr(torch, 'get_float32_matmul_precision'):
         try:
@@ -622,6 +780,17 @@ async def lifespan(app: FastAPI):
                 print(f"⚠ Attention slicing not available: {e}")
         else:
             print("✓ Attention slicing disabled (maximum speed mode)")
+        
+        # Load LoRA weights if configured
+        if LORA_ENABLED and LORA_CONFIGS:
+            print(f"\nLoading {len(LORA_CONFIGS)} LoRA(s)...")
+            loaded_loras = load_multiple_loras(pipe, LORA_CONFIGS)
+            if loaded_loras > 0:
+                print(f"✓ Successfully loaded {loaded_loras}/{len(LORA_CONFIGS)} LoRA(s)")
+            else:
+                print("⚠ No LoRAs were loaded successfully")
+        elif LORA_ENABLED:
+            print("\nℹ LoRA loading enabled but no LoRAs configured")
         
         # Optional optimizations - Attention backend selection
         if ENABLE_FLASH_ATTENTION and ENABLE_ATTENTION_BACKEND_OPTIMIZATION:
@@ -1173,6 +1342,153 @@ async def get_metrics():
         uptime_seconds=round(uptime, 2),
         requests_per_minute=round(rpm, 2),
     )
+
+# ============================================================================
+# LoRA Management Endpoints
+# ============================================================================
+
+class LoadLoraRequest(BaseModel):
+    """Request to load a LoRA"""
+    path: str = Field(..., description="Path to LoRA file or HuggingFace repo ID")
+    strength: float = Field(default=0.8, ge=0.0, le=2.0, description="LoRA strength (0.0-2.0)")
+    adapter_name: Optional[str] = Field(default=None, description="Optional adapter name")
+
+class LoraInfoResponse(BaseModel):
+    """Response with LoRA information"""
+    loaded_loras: List[str]
+    message: str
+
+@app.get("/lora/list", response_model=LoraInfoResponse)
+async def list_loaded_loras():
+    """List currently loaded LoRAs"""
+    if pipe is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    try:
+        # Try to get list of active adapters
+        if hasattr(pipe, 'get_active_adapters'):
+            active = pipe.get_active_adapters()
+            return LoraInfoResponse(
+                loaded_loras=list(active) if active else [],
+                message=f"Found {len(active) if active else 0} active LoRA adapter(s)"
+            )
+        elif hasattr(pipe, 'get_list_adapters'):
+            adapters = pipe.get_list_adapters()
+            return LoraInfoResponse(
+                loaded_loras=list(adapters.keys()) if adapters else [],
+                message=f"Found {len(adapters) if adapters else 0} loaded LoRA adapter(s)"
+            )
+        else:
+            return LoraInfoResponse(
+                loaded_loras=[],
+                message="LoRA adapter listing not available for this pipeline"
+            )
+    except Exception as e:
+        return LoraInfoResponse(
+            loaded_loras=[],
+            message=f"Could not list LoRAs: {str(e)}"
+        )
+
+@app.post("/lora/load", response_model=LoraInfoResponse)
+async def load_lora_endpoint(request: LoadLoraRequest):
+    """
+    Dynamically load a LoRA at runtime.
+    Similar to ComfyUI's LoraLoaderModelOnly node.
+    """
+    if pipe is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    # Check if there are active generations
+    if metrics.active_generations > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot load LoRA while generations are in progress. Please wait."
+        )
+    
+    try:
+        adapter_name = request.adapter_name or f"lora_{int(time.time())}"
+        success = load_lora_weights(
+            pipe,
+            request.path,
+            lora_strength=request.strength,
+            adapter_name=adapter_name,
+        )
+        
+        if success:
+            return LoraInfoResponse(
+                loaded_loras=[adapter_name],
+                message=f"Successfully loaded LoRA '{adapter_name}' with strength {request.strength}"
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load LoRA from '{request.path}'"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error loading LoRA: {str(e)}"
+        )
+
+@app.post("/lora/unload")
+async def unload_loras():
+    """
+    Unload all LoRAs and restore the base model.
+    """
+    if pipe is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    # Check if there are active generations
+    if metrics.active_generations > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot unload LoRAs while generations are in progress. Please wait."
+        )
+    
+    try:
+        # Try to unfuse and unload LoRAs
+        if hasattr(pipe, 'unfuse_lora'):
+            pipe.unfuse_lora()
+        if hasattr(pipe, 'unload_lora_weights'):
+            pipe.unload_lora_weights()
+        
+        return {"message": "LoRAs unloaded successfully", "status": "success"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error unloading LoRAs: {str(e)}"
+        )
+
+@app.post("/lora/set-strength")
+async def set_lora_strength(adapter_name: str, strength: float = 0.8):
+    """
+    Adjust the strength of a loaded LoRA adapter.
+    """
+    if pipe is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    # Clamp strength
+    strength = max(0.0, min(2.0, strength))
+    
+    try:
+        if hasattr(pipe, 'set_adapters'):
+            pipe.set_adapters([adapter_name], adapter_weights=[strength])
+            return {
+                "message": f"Set LoRA '{adapter_name}' strength to {strength}",
+                "status": "success"
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Setting adapter strength not supported for this pipeline"
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error setting LoRA strength: {str(e)}"
+        )
 
 @app.post("/generate", response_model=GenerateResponse)
 async def generate_image(request: GenerateRequest):
