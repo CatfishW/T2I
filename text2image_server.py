@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 ULTRA-HIGH-PERFORMANCE Text-to-Image Server
 Optimized to be FASTER THAN COMFYUI
