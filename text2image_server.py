@@ -6,7 +6,7 @@ Optimized to be FASTER THAN COMFYUI
 Cross-platform optimizations for Windows and Ubuntu
 
 Features:
-- Modern torch.compile() optimization (PyTorch 2.0+, Linux only) - 20-40% faster
+- Modern torch.compile() optimization (PyTorch 2.0+, Linux or Windows with Triton) - 20-40% faster
 - Flash Attention 3/2/SDPA support with automatic backend selection - 30-50% faster attention
 - CUDA optimizations (cuDNN benchmark, TF32, high precision matmul) - 10-25% faster
 - VAE tiling for efficient large image processing
@@ -26,6 +26,7 @@ Expected Performance (with all optimizations):
 - Throughput: 25-50 images/minute
 - Significantly faster than ComfyUI with same model
 - Windows: Fast even without torch.compile (uses Flash Attention and other optimizations)
+- Windows: torch.compile() supported when Triton is installed
 """
 
 import asyncio
@@ -873,23 +874,31 @@ else:
 ENABLE_COMPILATION_REQUESTED = config["model"]["enable_compilation"]
 ENABLE_TORCH_COMPILE_REQUESTED = config["model"].get("enable_torch_compile", True)
 
-# Disable compilation on Windows (torch.compile has issues on Windows)
+# Check Triton availability first
+TRITON_AVAILABLE = check_triton_available()
+
+# On Windows, only allow compilation if Triton is installed
 if IS_WINDOWS:
     if ENABLE_COMPILATION_REQUESTED or ENABLE_TORCH_COMPILE_REQUESTED:
-        print("=" * 60)
-        print(" WARNING: Model compilation is disabled on Windows.")
-        print("  torch.compile() and transformer.compile() have compatibility")
-        print("  issues on Windows systems.")
-        print("  The server will run without compilation (still fast with")
-        print("  Flash Attention and other optimizations enabled).")
-        print("=" * 60)
-    ENABLE_COMPILATION_REQUESTED = False
-    ENABLE_TORCH_COMPILE_REQUESTED = False
+        if TRITON_AVAILABLE:
+            print("=" * 60)
+            print(" INFO: Model compilation enabled on Windows (Triton detected).")
+            print("  torch.compile() will be used for optimization.")
+            print("=" * 60)
+        else:
+            print("=" * 60)
+            print(" WARNING: Model compilation is disabled on Windows.")
+            print("  Triton is not installed. To enable compilation on Windows,")
+            print("  install Triton: pip install triton")
+            print("  The server will run without compilation (still fast with")
+            print("  Flash Attention and other optimizations enabled).")
+            print("=" * 60)
+            ENABLE_COMPILATION_REQUESTED = False
+            ENABLE_TORCH_COMPILE_REQUESTED = False
 
-TRITON_AVAILABLE = check_triton_available()
-ENABLE_COMPILATION = ENABLE_COMPILATION_REQUESTED and TRITON_AVAILABLE and not IS_WINDOWS
+ENABLE_COMPILATION = ENABLE_COMPILATION_REQUESTED and TRITON_AVAILABLE
 
-if ENABLE_COMPILATION_REQUESTED and not TRITON_AVAILABLE and not IS_WINDOWS:
+if ENABLE_COMPILATION_REQUESTED and not TRITON_AVAILABLE:
     print("=" * 60)
     print(" WARNING: Model compilation requested but Triton is not installed.")
     print("  Compilation will be disabled automatically.")
@@ -905,8 +914,8 @@ ENABLE_VAE_SLICING = config["model"].get("enable_vae_slicing", False)
 ENABLE_VAE_TILING = config["model"].get("enable_vae_tiling", True)
 ENABLE_ATTENTION_SLICING = config["model"].get("enable_attention_slicing", False)
 ENABLE_FLASH_ATTENTION = config["model"].get("enable_flash_attention", True)
-# Disable torch.compile on Windows
-ENABLE_TORCH_COMPILE = config["model"].get("enable_torch_compile", True) and not IS_WINDOWS
+# Allow torch.compile on Windows if Triton is available
+ENABLE_TORCH_COMPILE = config["model"].get("enable_torch_compile", True) and (not IS_WINDOWS or TRITON_AVAILABLE)
 TORCH_COMPILE_MODE = config["model"].get("torch_compile_mode", "reduce-overhead")
 ENABLE_CUDA_GRAPHS = config["model"].get("enable_cuda_graphs", False)
 ENABLE_OPTIMIZED_VAE = config["model"].get("enable_optimized_vae", True)
@@ -968,14 +977,14 @@ async def lifespan(app: FastAPI):
     print("Optimized for MAXIMUM SPEED (faster than ComfyUI)")
     print("=" * 60)
     if IS_WINDOWS:
-        print(f" Running on Windows - Compilation disabled (Windows compatibility)")
+        if TRITON_AVAILABLE:
+            print(f" Running on Windows with Triton - Compilation enabled")
+        else:
+            print(f" Running on Windows without Triton - Compilation disabled")
     print(f"Model: {MODEL_NAME}")
     print(f"Max Concurrent Generations: {MAX_CONCURRENT_GENERATIONS}")
     print(f"Max Queue Size: {MAX_QUEUE_SIZE}")
-    if IS_WINDOWS:
-        print(f"Torch Compile: False (disabled on Windows)")
-    else:
-        print(f"Torch Compile: {ENABLE_TORCH_COMPILE} (mode: {TORCH_COMPILE_MODE})")
+    print(f"Torch Compile: {ENABLE_TORCH_COMPILE}" + (f" (mode: {TORCH_COMPILE_MODE})" if ENABLE_TORCH_COMPILE else ""))
     print(f"Legacy Compilation: {ENABLE_COMPILATION}")
     print(f"Flash Attention: {ENABLE_FLASH_ATTENTION}")
     print(f"VAE Slicing: {ENABLE_VAE_SLICING} (disabled for speed)")

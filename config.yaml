@@ -38,7 +38,7 @@ model:
   # This provides significant speedup after first run (compilation happens on warmup)
   # Options: "default", "reduce-overhead", "max-autotune"
   # "reduce-overhead" is recommended for best speed/compilation time balance
-  enable_torch_compile: false
+  enable_torch_compile: true
   torch_compile_mode: "reduce-overhead"
   
   # Legacy model compilation (fallback if torch.compile fails)
