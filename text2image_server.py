@@ -1172,53 +1172,117 @@ async def lifespan(app: FastAPI):
             use_local_only = False
         
         # ================================================================
-        # Multi-GPU Loading (Manual component placement across GPUs)
+        # Multi-GPU Loading (Memory-aware component placement)
         # ================================================================
         if MULTI_GPU_ENABLED and len(GPU_IDS) > 1:
             print(f"\n{'='*60}")
-            print(f"MULTI-GPU MODE: Distributing components across {len(GPU_IDS)} GPUs")
-            print(f"GPUs: {[get_gpu_info(g).get('name', f'GPU {g}') for g in GPU_IDS]}")
+            print(f"MULTI-GPU MODE: Checking GPU memory availability")
             print(f"{'='*60}")
             
-            # Load pipeline first (to CPU)
-            print(f"\nLoading model components...")
-            pipe = ZImagePipeline.from_pretrained(
-                model_path,
-                torch_dtype=TORCH_DTYPE,
-                low_cpu_mem_usage=True,
-                local_files_only=use_local_only,
-            )
+            # Check available memory on each GPU
+            gpu_free_memory = {}
+            min_required_gb = 8.0  # Minimum GB needed for transformer
             
-            # Manually place components on different GPUs for even distribution
-            # Transformer is the largest component - put on GPU 0
-            # VAE and text encoder on GPU 1
-            gpu_0 = f"cuda:{GPU_IDS[0]}"
-            gpu_1 = f"cuda:{GPU_IDS[1]}"
+            for gpu_id in GPU_IDS:
+                try:
+                    torch.cuda.set_device(gpu_id)
+                    torch.cuda.empty_cache()
+                    free_mem = torch.cuda.get_device_properties(gpu_id).total_memory - torch.cuda.memory_allocated(gpu_id)
+                    free_gb = free_mem / (1024**3)
+                    gpu_free_memory[gpu_id] = free_gb
+                    gpu_info = get_gpu_info(gpu_id)
+                    print(f"  GPU {gpu_id} ({gpu_info.get('name', 'Unknown')}): {free_gb:.1f} GB free")
+                except Exception as e:
+                    print(f"  GPU {gpu_id}: Error checking memory - {e}")
+                    gpu_free_memory[gpu_id] = 0
             
-            print(f"\nDistributing components:")
-            print(f"  GPU {GPU_IDS[0]}: Transformer (largest)")
-            print(f"  GPU {GPU_IDS[1]}: VAE + Text Encoders")
+            # Find GPU with most free memory for transformer
+            best_gpu = max(gpu_free_memory, key=gpu_free_memory.get)
+            best_gpu_free = gpu_free_memory[best_gpu]
             
-            # Move transformer to GPU 0 (the heavy one, ~6-8GB)
-            if hasattr(pipe, 'transformer') and pipe.transformer is not None:
-                pipe.transformer.to(gpu_0)
-                print(f"  [OK] Transformer -> {gpu_0}")
+            # Check if we have enough memory for multi-GPU
+            total_free = sum(gpu_free_memory.values())
             
-            # Move VAE to GPU 1 (~1-2GB)
-            if hasattr(pipe, 'vae') and pipe.vae is not None:
-                pipe.vae.to(gpu_1)
-                print(f"  [OK] VAE -> {gpu_1}")
-            
-            # Move text encoders to GPU 1 (~1-3GB each)
-            if hasattr(pipe, 'text_encoder') and pipe.text_encoder is not None:
-                pipe.text_encoder.to(gpu_1)
-                print(f"  [OK] Text Encoder -> {gpu_1}")
-            if hasattr(pipe, 'text_encoder_2') and pipe.text_encoder_2 is not None:
-                pipe.text_encoder_2.to(gpu_1)
-                print(f"  [OK] Text Encoder 2 -> {gpu_1}")
-            if hasattr(pipe, 'text_encoder_3') and pipe.text_encoder_3 is not None:
-                pipe.text_encoder_3.to(gpu_1)
-                print(f"  [OK] Text Encoder 3 -> {gpu_1}")
+            if best_gpu_free < min_required_gb:
+                print(f"\n[WARNING] Insufficient GPU memory for multi-GPU mode")
+                print(f"  Best GPU ({best_gpu}) only has {best_gpu_free:.1f} GB free")
+                print(f"  Need at least {min_required_gb} GB for transformer")
+                print(f"  Falling back to CPU offload mode...")
+                
+                # Fall back to CPU offload mode
+                pipe = ZImagePipeline.from_pretrained(
+                    model_path,
+                    torch_dtype=TORCH_DTYPE,
+                    low_cpu_mem_usage=True,
+                    local_files_only=use_local_only,
+                )
+                pipe.enable_model_cpu_offload(gpu_id=best_gpu)
+                print(f"  Model loaded with CPU offload on GPU {best_gpu}")
+            else:
+                print(f"\n[OK] Sufficient memory available ({total_free:.1f} GB total free)")
+                
+                # Sort GPUs by free memory (most free first)
+                sorted_gpus = sorted(gpu_free_memory.keys(), key=lambda g: gpu_free_memory[g], reverse=True)
+                gpu_0 = sorted_gpus[0]  # Most free memory - for transformer
+                gpu_1 = sorted_gpus[1] if len(sorted_gpus) > 1 else gpu_0
+                
+                print(f"\nDistributing components by available memory:")
+                print(f"  GPU {gpu_0} ({gpu_free_memory[gpu_0]:.1f} GB free): Transformer")
+                print(f"  GPU {gpu_1} ({gpu_free_memory[gpu_1]:.1f} GB free): VAE + Text Encoders")
+                
+                # Load pipeline to CPU first with low memory
+                print(f"\nLoading model components...")
+                pipe = ZImagePipeline.from_pretrained(
+                    model_path,
+                    torch_dtype=TORCH_DTYPE,
+                    low_cpu_mem_usage=True,
+                    local_files_only=use_local_only,
+                )
+                
+                # Clear cache before moving
+                torch.cuda.empty_cache()
+                
+                # Move components one by one with cache clearing
+                try:
+                    if hasattr(pipe, 'transformer') and pipe.transformer is not None:
+                        pipe.transformer.to(f"cuda:{gpu_0}")
+                        torch.cuda.empty_cache()
+                        print(f"  [OK] Transformer -> cuda:{gpu_0}")
+                    
+                    if hasattr(pipe, 'vae') and pipe.vae is not None:
+                        pipe.vae.to(f"cuda:{gpu_1}")
+                        torch.cuda.empty_cache()
+                        print(f"  [OK] VAE -> cuda:{gpu_1}")
+                    
+                    if hasattr(pipe, 'text_encoder') and pipe.text_encoder is not None:
+                        pipe.text_encoder.to(f"cuda:{gpu_1}")
+                        torch.cuda.empty_cache()
+                        print(f"  [OK] Text Encoder -> cuda:{gpu_1}")
+                    
+                    if hasattr(pipe, 'text_encoder_2') and pipe.text_encoder_2 is not None:
+                        pipe.text_encoder_2.to(f"cuda:{gpu_1}")
+                        torch.cuda.empty_cache()
+                        print(f"  [OK] Text Encoder 2 -> cuda:{gpu_1}")
+                    
+                    if hasattr(pipe, 'text_encoder_3') and pipe.text_encoder_3 is not None:
+                        pipe.text_encoder_3.to(f"cuda:{gpu_1}")
+                        torch.cuda.empty_cache()
+                        print(f"  [OK] Text Encoder 3 -> cuda:{gpu_1}")
+                        
+                except torch.cuda.OutOfMemoryError as e:
+                    print(f"\n[WARNING] OOM during component placement, using CPU offload...")
+                    # Clean up and retry with CPU offload
+                    del pipe
+                    torch.cuda.empty_cache()
+                    
+                    pipe = ZImagePipeline.from_pretrained(
+                        model_path,
+                        torch_dtype=TORCH_DTYPE,
+                        low_cpu_mem_usage=True,
+                        local_files_only=use_local_only,
+                    )
+                    pipe.enable_model_cpu_offload(gpu_id=gpu_0)
+                    print(f"  Model loaded with CPU offload on GPU {gpu_0}")
             
             # Apply optimizations
             if ENABLE_VAE_TILING:
@@ -1248,7 +1312,7 @@ async def lifespan(app: FastAPI):
                     print(f"[OK] Successfully loaded {loaded_loras}/{len(LORA_CONFIGS)} LoRA(s)")
             
             # Warmup
-            print("\nWarming up multi-GPU model...")
+            print("\nWarming up model...")
             try:
                 with torch.inference_mode():
                     warmup_img = pipe(
@@ -1264,7 +1328,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f" Warmup failed (non-critical): {e}")
             
-            print(f"\n[OK] Multi-GPU setup complete: Components distributed across {len(GPU_IDS)} GPUs")
+            print(f"\n[OK] Multi-GPU setup complete")
         
         # ================================================================
         # Single GPU Loading (original logic)
