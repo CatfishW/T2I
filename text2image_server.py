@@ -1172,26 +1172,53 @@ async def lifespan(app: FastAPI):
             use_local_only = False
         
         # ================================================================
-        # Multi-GPU Loading (Model Parallelism - split one model across GPUs)
+        # Multi-GPU Loading (Manual component placement across GPUs)
         # ================================================================
         if MULTI_GPU_ENABLED and len(GPU_IDS) > 1:
             print(f"\n{'='*60}")
-            print(f"MULTI-GPU MODE: Splitting model across {len(GPU_IDS)} GPUs")
+            print(f"MULTI-GPU MODE: Distributing components across {len(GPU_IDS)} GPUs")
             print(f"GPUs: {[get_gpu_info(g).get('name', f'GPU {g}') for g in GPU_IDS]}")
             print(f"{'='*60}")
             
-            # Use device_map to automatically split model across multiple GPUs
-            # This uses model parallelism - one model split across GPUs
-            print(f"\nLoading model with device_map='balanced' across GPUs {GPU_IDS}...")
-            
+            # Load pipeline first (to CPU)
+            print(f"\nLoading model components...")
             pipe = ZImagePipeline.from_pretrained(
                 model_path,
                 torch_dtype=TORCH_DTYPE,
-                low_cpu_mem_usage=True,  # Required for device_map
+                low_cpu_mem_usage=True,
                 local_files_only=use_local_only,
-                device_map="balanced",  # Automatically balance across available GPUs
             )
-            print(" Model loaded with balanced device_map (model parallelism)")
+            
+            # Manually place components on different GPUs for even distribution
+            # Transformer is the largest component - put on GPU 0
+            # VAE and text encoder on GPU 1
+            gpu_0 = f"cuda:{GPU_IDS[0]}"
+            gpu_1 = f"cuda:{GPU_IDS[1]}"
+            
+            print(f"\nDistributing components:")
+            print(f"  GPU {GPU_IDS[0]}: Transformer (largest)")
+            print(f"  GPU {GPU_IDS[1]}: VAE + Text Encoders")
+            
+            # Move transformer to GPU 0 (the heavy one, ~6-8GB)
+            if hasattr(pipe, 'transformer') and pipe.transformer is not None:
+                pipe.transformer.to(gpu_0)
+                print(f"  [OK] Transformer -> {gpu_0}")
+            
+            # Move VAE to GPU 1 (~1-2GB)
+            if hasattr(pipe, 'vae') and pipe.vae is not None:
+                pipe.vae.to(gpu_1)
+                print(f"  [OK] VAE -> {gpu_1}")
+            
+            # Move text encoders to GPU 1 (~1-3GB each)
+            if hasattr(pipe, 'text_encoder') and pipe.text_encoder is not None:
+                pipe.text_encoder.to(gpu_1)
+                print(f"  [OK] Text Encoder -> {gpu_1}")
+            if hasattr(pipe, 'text_encoder_2') and pipe.text_encoder_2 is not None:
+                pipe.text_encoder_2.to(gpu_1)
+                print(f"  [OK] Text Encoder 2 -> {gpu_1}")
+            if hasattr(pipe, 'text_encoder_3') and pipe.text_encoder_3 is not None:
+                pipe.text_encoder_3.to(gpu_1)
+                print(f"  [OK] Text Encoder 3 -> {gpu_1}")
             
             # Apply optimizations
             if ENABLE_VAE_TILING:
@@ -1237,7 +1264,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f" Warmup failed (non-critical): {e}")
             
-            print(f"\n[OK] Multi-GPU setup complete: Model split across {len(GPU_IDS)} GPUs")
+            print(f"\n[OK] Multi-GPU setup complete: Components distributed across {len(GPU_IDS)} GPUs")
         
         # ================================================================
         # Single GPU Loading (original logic)
@@ -2289,7 +2316,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="High-Performance Text-to-Image Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8010, help="Port to bind to")
+    parser.add_argument("--port", type=int, default=9998, help="Port to bind to")
     parser.add_argument("--workers", type=int, default=1, help="Number of workers (use 1 for GPU sharing)")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload (development only)")
     
