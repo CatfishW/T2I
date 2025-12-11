@@ -28,7 +28,7 @@ model:
   # Auto-detection checks: HuggingFace cache, current directory, ./models/
   # Example: local_path: "./models--Tongyi-MAI--Z-Image-Turbo"
   # Example: local_path: "C:/Users/username/.cache/huggingface/hub/models--Tongyi-MAI--Z-Image-Turbo"
-  local_path: "./models--Tongyi-MAI--Z-Image-Turbo"
+  local_path: None #"./models--Tongyi-MAI--Z-Image-Turbo"
   
   # Torch dtype: "bfloat16", "float16", or "float32"
   # bfloat16 is recommended for modern GPUs (fastest)
@@ -38,16 +38,16 @@ model:
   # This provides significant speedup after first run (compilation happens on warmup)
   # Options: "default", "reduce-overhead", "max-autotune"
   # "reduce-overhead" is recommended for best speed/compilation time balance
-  enable_torch_compile: true
+  enable_torch_compile: false
   torch_compile_mode: "reduce-overhead"
   
   # Legacy model compilation (fallback if torch.compile fails)
   # NOTE: Requires Triton to be installed (pip install triton)
-  enable_compilation: false
+  enable_compilation: true
   
   # Enable CPU offloading (saves GPU memory, SLOWER inference)
   # Disable for maximum speed - only enable if you run out of VRAM
-  enable_cpu_offload: true
+  enable_cpu_offload: false
   
   # Enable sequential CPU offloading (most memory efficient, MUCH SLOWER)
   # Disable for maximum speed - only enable if you run out of VRAM
@@ -78,14 +78,35 @@ model:
   
   # CUDA graphs for repeated inference patterns (experimental)
   # Can provide additional speedup for identical request patterns
-  enable_cuda_graphs: false
+  enable_cuda_graphs: true
+  
+  # Use channels_last memory format for better GPU memory access patterns
+  # Provides 5-15% speedup on modern NVIDIA GPUs (Ampere+)
+  enable_channels_last: true
+
+# ============================================================================
+# Multi-GPU Settings
+# ============================================================================
+multi_gpu:
+  # Enable multi-GPU deployment (requires 2+ GPUs)
+  # Each GPU runs an independent pipeline for maximum throughput
+  enabled: false
+  
+  # GPUs to use: "all" for all available GPUs, or a list like [0, 1, 2]
+  gpus: "all"
+  
+  # Load balancing strategy for distributing requests across GPUs:
+  # - "round_robin": Simple rotation through GPUs
+  # - "least_busy": Route to GPU with fewest pending requests (recommended)
+  # - "random": Random GPU selection
+  load_balancing: "least_busy"
 
 # ============================================================================
 # LoRA Settings
 # ============================================================================
 lora:
   # Enable LoRA loading
-  enabled: true
+  enabled: false
   
   # List of LoRAs to load
   # Each LoRA entry should have:
@@ -115,10 +136,10 @@ storage:
   # Image format for transmission ("jpeg" or "png")
   # JPEG is much faster and smaller, PNG is lossless
   # Recommended: "jpeg" for faster transmission
-  image_format: "jpeg"
+  image_format: "png"
   
   # JPEG quality (1-100, only applies when image_format is "jpeg")
   # Higher quality = larger file size, slower transmission
   # Recommended: 85-95 for good balance of quality and speed
-  jpeg_quality: 90
+  jpeg_quality: 100
 

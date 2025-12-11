@@ -97,7 +97,7 @@ if hasattr(torch, 'set_float32_matmul_precision'):
     except Exception as e:
         print(f" Could not set float32 matmul precision: {e}")
 
-# Optimize CUDA memory allocation
+# Optimize CUDA memory allocation with expandable segments for better memory reuse
 if torch.cuda.is_available():
     # Allow PyTorch to use all available GPU memory more efficiently
     torch.cuda.set_per_process_memory_fraction(1.0)
@@ -106,13 +106,42 @@ if torch.cuda.is_available():
         torch.cuda.memory.set_per_process_memory_fraction(1.0)
     except:
         pass
-    # Set optimal memory allocation strategy (use new variable name)
+    # Set optimal memory allocation strategy with expandable segments
+    # This reduces memory fragmentation and improves allocation speed
     try:
-        # Use PYTORCH_ALLOC_CONF instead of deprecated PYTORCH_CUDA_ALLOC_CONF
-        if 'PYTORCH_ALLOC_CONF' not in os.environ:
-            os.environ['PYTORCH_ALLOC_CONF'] = 'max_split_size_mb:512'
+        if 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
+            # expandable_segments: allows memory pools to grow dynamically (reduces fragmentation)
+            # max_split_size_mb: limits memory block splitting (reduces overhead)
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:512'
     except:
         pass
+
+# ============================================================================
+# Multi-GPU Detection
+# ============================================================================
+
+def get_available_gpus() -> List[int]:
+    """Get list of available CUDA GPU indices"""
+    if not torch.cuda.is_available():
+        return []
+    return list(range(torch.cuda.device_count()))
+
+def get_gpu_info(device_id: int) -> Dict:
+    """Get information about a specific GPU"""
+    if not torch.cuda.is_available() or device_id >= torch.cuda.device_count():
+        return {}
+    
+    props = torch.cuda.get_device_properties(device_id)
+    return {
+        "id": device_id,
+        "name": props.name,
+        "total_memory_gb": round(props.total_memory / (1024**3), 2),
+        "compute_capability": f"{props.major}.{props.minor}",
+        "multi_processor_count": props.multi_processor_count,
+    }
+
+AVAILABLE_GPUS = get_available_gpus()
+NUM_GPUS = len(AVAILABLE_GPUS)
 
 # ============================================================================
 # Configuration
@@ -147,7 +176,13 @@ def load_config(config_path: str = "config.yaml") -> Dict:
             "enable_optimized_vae": True,  # Optimized VAE decoding
             "enable_torch_jit": False,  # Use torch.jit.script for Windows (alternative to compile)
             "enable_fast_image_encoding": True,  # Use faster image encoding when possible
-            "enable_attention_backend_optimization": True  # Try multiple attention backends
+            "enable_attention_backend_optimization": True,  # Try multiple attention backends
+            "enable_channels_last": True  # Use channels_last memory format for better GPU performance
+        },
+        "multi_gpu": {
+            "enabled": False,  # Enable multi-GPU deployment
+            "gpus": "all",  # GPU indices to use: "all" or list like [0, 1, 2]
+            "load_balancing": "least_busy"  # Options: "round_robin", "least_busy", "random"
         },
         "storage": {
             "images_dir": "images",
@@ -167,14 +202,13 @@ def load_config(config_path: str = "config.yaml") -> Dict:
                 user_config = yaml.safe_load(f) or {}
             # Merge with defaults
             config = default_config.copy()
-            if "concurrency" in user_config:
-                config["concurrency"].update(user_config["concurrency"])
-            if "model" in user_config:
-                config["model"].update(user_config["model"])
-            if "storage" in user_config:
-                config["storage"].update(user_config["storage"])
-            if "lora" in user_config:
-                config["lora"].update(user_config["lora"])
+            for key in default_config:
+                if key in user_config:
+                    if isinstance(default_config[key], dict):
+                        config[key] = default_config[key].copy()
+                        config[key].update(user_config[key])
+                    else:
+                        config[key] = user_config[key]
             return config
         except Exception as e:
             print(f"Warning: Failed to load config.yaml: {e}. Using defaults.")
@@ -923,6 +957,23 @@ LOW_CPU_MEM_USAGE = config["model"].get("low_cpu_mem_usage", False)
 ENABLE_TORCH_JIT = config["model"].get("enable_torch_jit", False)
 ENABLE_FAST_IMAGE_ENCODING = config["model"].get("enable_fast_image_encoding", True)
 ENABLE_ATTENTION_BACKEND_OPTIMIZATION = config["model"].get("enable_attention_backend_optimization", True)
+ENABLE_CHANNELS_LAST = config["model"].get("enable_channels_last", True)
+
+# Multi-GPU settings
+MULTI_GPU_ENABLED = config.get("multi_gpu", {}).get("enabled", False) and NUM_GPUS > 1
+MULTI_GPU_DEVICES = config.get("multi_gpu", {}).get("gpus", "all")
+LOAD_BALANCING_STRATEGY = config.get("multi_gpu", {}).get("load_balancing", "least_busy")
+
+# Resolve GPU list
+if MULTI_GPU_ENABLED:
+    if MULTI_GPU_DEVICES == "all":
+        GPU_IDS = AVAILABLE_GPUS.copy()
+    elif isinstance(MULTI_GPU_DEVICES, list):
+        GPU_IDS = [g for g in MULTI_GPU_DEVICES if g in AVAILABLE_GPUS]
+    else:
+        GPU_IDS = [0] if AVAILABLE_GPUS else []
+else:
+    GPU_IDS = [0] if AVAILABLE_GPUS else []
 
 # Storage
 IMAGES_DIR = Path(config["storage"]["images_dir"])
@@ -937,7 +988,30 @@ JPEG_QUALITY = max(1, min(100, JPEG_QUALITY))
 # Global State
 # ============================================================================
 
+# Single GPU mode: single pipeline
 pipe: Optional[ZImagePipeline] = None
+
+# Multi-GPU mode: pipeline per GPU with worker pool
+@dataclass
+class GPUWorker:
+    """Represents a GPU worker with its own pipeline"""
+    gpu_id: int
+    pipeline: Optional[ZImagePipeline] = None
+    active_requests: int = 0
+    total_requests: int = 0
+    semaphore: Optional[asyncio.Semaphore] = None
+    lock: Optional[asyncio.Lock] = None
+    
+    def __post_init__(self):
+        if self.semaphore is None:
+            self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_GENERATIONS)
+        if self.lock is None:
+            self.lock = asyncio.Lock()
+
+# GPU workers for multi-GPU mode
+gpu_workers: Dict[int, GPUWorker] = {}
+gpu_worker_round_robin_index = 0
+
 generation_semaphore = asyncio.Semaphore(MAX_CONCURRENT_GENERATIONS)
 request_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
 
@@ -956,6 +1030,8 @@ class ServerMetrics:
     current_queue_size: int = 0
     active_generations: int = 0
     start_time: Optional[datetime] = field(default=None)
+    # Per-GPU metrics
+    gpu_request_counts: Dict[int, int] = field(default_factory=dict)
     
     def __post_init__(self):
         if self.start_time is None:
@@ -963,9 +1039,73 @@ class ServerMetrics:
 
 metrics = ServerMetrics()
 
+
 # ============================================================================
 # Model Loading
 # ============================================================================
+
+def load_pipeline_on_gpu(model_path: str, gpu_id: int, use_local_only: bool = True) -> ZImagePipeline:
+    """Load a pipeline instance on a specific GPU"""
+    device = f"cuda:{gpu_id}"
+    
+    pipeline = ZImagePipeline.from_pretrained(
+        model_path,
+        torch_dtype=TORCH_DTYPE,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+        local_files_only=use_local_only,
+    )
+    
+    # Move to specific GPU
+    pipeline.to(device)
+    
+    # Apply channels_last memory format
+    if ENABLE_CHANNELS_LAST:
+        try:
+            if hasattr(pipeline, 'transformer') and pipeline.transformer is not None:
+                pipeline.transformer = pipeline.transformer.to(memory_format=torch.channels_last)
+            if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+                pipeline.vae = pipeline.vae.to(memory_format=torch.channels_last)
+        except:
+            pass
+    
+    # VAE optimizations
+    if ENABLE_VAE_TILING:
+        try:
+            pipeline.enable_vae_tiling()
+        except:
+            pass
+    
+    return pipeline
+
+
+def get_best_gpu_worker() -> Optional[GPUWorker]:
+    """Select the best GPU worker based on load balancing strategy"""
+    global gpu_worker_round_robin_index
+    
+    if not gpu_workers:
+        return None
+    
+    worker_list = list(gpu_workers.values())
+    
+    if LOAD_BALANCING_STRATEGY == "round_robin":
+        # Simple round-robin selection
+        worker = worker_list[gpu_worker_round_robin_index % len(worker_list)]
+        gpu_worker_round_robin_index += 1
+        return worker
+    
+    elif LOAD_BALANCING_STRATEGY == "least_busy":
+        # Select GPU with fewest active requests
+        return min(worker_list, key=lambda w: w.active_requests)
+    
+    elif LOAD_BALANCING_STRATEGY == "random":
+        import random
+        return random.choice(worker_list)
+    
+    else:
+        # Default to round-robin
+        worker = worker_list[gpu_worker_round_robin_index % len(worker_list)]
+        gpu_worker_round_robin_index += 1
+        return worker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -996,7 +1136,14 @@ async def lifespan(app: FastAPI):
     print(f"Sequential CPU Offloading: {ENABLE_SEQUENTIAL_CPU_OFFLOAD}")
     print(f"Fast Image Encoding: {ENABLE_FAST_IMAGE_ENCODING}")
     print(f"Attention Backend Optimization: {ENABLE_ATTENTION_BACKEND_OPTIMIZATION}")
+    print(f"Channels Last Memory Format: {ENABLE_CHANNELS_LAST}")
     print(f"LoRA Loading: {LORA_ENABLED} ({len(LORA_CONFIGS)} configured)")
+    # Multi-GPU info
+    if MULTI_GPU_ENABLED:
+        print(f"Multi-GPU Mode: ENABLED ({len(GPU_IDS)} GPUs: {GPU_IDS})")
+        print(f"Load Balancing: {LOAD_BALANCING_STRATEGY}")
+    else:
+        print(f"Multi-GPU Mode: Disabled (single GPU: {GPU_IDS[0] if GPU_IDS else 'CPU'})")
     # Show float32 matmul precision if available
     if hasattr(torch, 'get_float32_matmul_precision'):
         try:
@@ -1042,6 +1189,21 @@ async def lifespan(app: FastAPI):
         else:
             pipe.to("cuda")
             print(" Model loaded on CUDA")
+        
+        # Apply channels_last memory format for better GPU performance (5-15% speedup)
+        # This optimizes memory access patterns for convolutions on modern NVIDIA GPUs
+        if ENABLE_CHANNELS_LAST and not ENABLE_CPU_OFFLOAD and not ENABLE_SEQUENTIAL_CPU_OFFLOAD:
+            try:
+                # Apply to transformer if it has parameters
+                if hasattr(pipe, 'transformer') and pipe.transformer is not None:
+                    pipe.transformer = pipe.transformer.to(memory_format=torch.channels_last)
+                    print(" Channels-last memory format applied to transformer")
+                # Apply to VAE
+                if hasattr(pipe, 'vae') and pipe.vae is not None:
+                    pipe.vae = pipe.vae.to(memory_format=torch.channels_last)
+                    print(" Channels-last memory format applied to VAE")
+            except Exception as e:
+                print(f" Could not apply channels_last format: {e}")
         
         # VAE optimizations
         if ENABLE_VAE_TILING:
@@ -1609,16 +1771,38 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
-    return {
+    """Health check endpoint with multi-GPU support"""
+    health_info = {
         "status": "healthy",
-        "model_loaded": pipe is not None,
+        "model_loaded": pipe is not None or len(gpu_workers) > 0,
         "cuda_available": torch.cuda.is_available(),
-        "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "current_queue_size": request_queue.qsize(),
         "active_generations": metrics.active_generations,
         "available_slots": MAX_CONCURRENT_GENERATIONS - metrics.active_generations,
     }
+    
+    # Multi-GPU information
+    if MULTI_GPU_ENABLED and gpu_workers:
+        health_info["multi_gpu"] = {
+            "enabled": True,
+            "num_gpus": len(gpu_workers),
+            "load_balancing": LOAD_BALANCING_STRATEGY,
+            "gpus": {}
+        }
+        for gpu_id, worker in gpu_workers.items():
+            gpu_info = get_gpu_info(gpu_id)
+            health_info["multi_gpu"]["gpus"][gpu_id] = {
+                "name": gpu_info.get("name", "Unknown"),
+                "active_requests": worker.active_requests,
+                "total_requests": worker.total_requests,
+                "pipeline_loaded": worker.pipeline is not None,
+            }
+    else:
+        # Single GPU mode
+        health_info["cuda_device"] = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+        health_info["multi_gpu"] = {"enabled": False}
+    
+    return health_info
 
 @app.get("/metrics", response_model=MetricsResponse)
 async def get_metrics():
