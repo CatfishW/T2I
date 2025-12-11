@@ -1172,101 +1172,72 @@ async def lifespan(app: FastAPI):
             use_local_only = False
         
         # ================================================================
-        # Multi-GPU Loading
+        # Multi-GPU Loading (Model Parallelism - split one model across GPUs)
         # ================================================================
         if MULTI_GPU_ENABLED and len(GPU_IDS) > 1:
             print(f"\n{'='*60}")
-            print(f"MULTI-GPU MODE: Loading pipelines on {len(GPU_IDS)} GPUs")
+            print(f"MULTI-GPU MODE: Splitting model across {len(GPU_IDS)} GPUs")
+            print(f"GPUs: {[get_gpu_info(g).get('name', f'GPU {g}') for g in GPU_IDS]}")
             print(f"{'='*60}")
             
-            for gpu_id in GPU_IDS:
-                gpu_info = get_gpu_info(gpu_id)
-                print(f"\n Loading pipeline on GPU {gpu_id}: {gpu_info.get('name', 'Unknown')}")
-                
-                try:
-                    # Load pipeline on specific GPU
-                    device = f"cuda:{gpu_id}"
-                    
-                    gpu_pipe = ZImagePipeline.from_pretrained(
-                        model_path,
-                        torch_dtype=TORCH_DTYPE,
-                        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
-                        local_files_only=use_local_only,
-                    )
-                    gpu_pipe.to(device)
-                    print(f"  Pipeline loaded on {device}")
-                    
-                    # Apply channels_last memory format
-                    if ENABLE_CHANNELS_LAST:
-                        try:
-                            if hasattr(gpu_pipe, 'transformer') and gpu_pipe.transformer is not None:
-                                gpu_pipe.transformer = gpu_pipe.transformer.to(memory_format=torch.channels_last)
-                            if hasattr(gpu_pipe, 'vae') and gpu_pipe.vae is not None:
-                                gpu_pipe.vae = gpu_pipe.vae.to(memory_format=torch.channels_last)
-                            print(f"  Channels-last format applied")
-                        except:
-                            pass
-                    
-                    # VAE optimizations
-                    if ENABLE_VAE_TILING:
-                        try:
-                            gpu_pipe.enable_vae_tiling()
-                            print(f"  VAE tiling enabled")
-                        except:
-                            pass
-                    
-                    # Flash Attention
-                    if ENABLE_FLASH_ATTENTION:
-                        try:
-                            gpu_pipe.transformer.set_attention_backend("_flash_3")
-                            print(f"  Flash Attention 3 enabled")
-                        except:
-                            try:
-                                gpu_pipe.transformer.set_attention_backend("flash")
-                                print(f"  Flash Attention 2 enabled")
-                            except:
-                                pass
-                    
-                    # LoRA loading for this GPU
-                    if LORA_ENABLED and LORA_CONFIGS:
-                        loaded = load_multiple_loras(gpu_pipe, LORA_CONFIGS)
-                        print(f"  LoRA(s) loaded: {loaded}")
-                    
-                    # Warmup this GPU
-                    print(f"  Warming up GPU {gpu_id}...")
-                    with torch.inference_mode():
-                        warmup_img = gpu_pipe(
-                            prompt="warmup",
-                            height=512,
-                            width=512,
-                            num_inference_steps=4,
-                            guidance_scale=0.0,
-                            generator=torch.Generator(device).manual_seed(0),
-                        ).images[0]
-                        del warmup_img
-                    torch.cuda.empty_cache()
-                    print(f"  GPU {gpu_id} ready!")
-                    
-                    # Create worker for this GPU
-                    worker = GPUWorker(
-                        gpu_id=gpu_id,
-                        pipeline=gpu_pipe,
-                        semaphore=asyncio.Semaphore(MAX_CONCURRENT_GENERATIONS),
-                        lock=asyncio.Lock(),
-                    )
-                    gpu_workers[gpu_id] = worker
-                    
-                except Exception as e:
-                    print(f"  [ERROR] Failed to load on GPU {gpu_id}: {e}")
-                    continue
+            # Use device_map to automatically split model across multiple GPUs
+            # This uses model parallelism - one model split across GPUs
+            print(f"\nLoading model with device_map='balanced' across GPUs {GPU_IDS}...")
             
-            # Set primary pipe to first worker's pipeline for backwards compatibility
-            if gpu_workers:
-                first_gpu = list(gpu_workers.keys())[0]
-                pipe = gpu_workers[first_gpu].pipeline
-                print(f"\n[OK] Multi-GPU setup complete: {len(gpu_workers)} GPUs active")
-            else:
-                raise RuntimeError("No GPUs successfully loaded for multi-GPU mode")
+            pipe = ZImagePipeline.from_pretrained(
+                model_path,
+                torch_dtype=TORCH_DTYPE,
+                low_cpu_mem_usage=True,  # Required for device_map
+                local_files_only=use_local_only,
+                device_map="balanced",  # Automatically balance across available GPUs
+            )
+            print(" Model loaded with balanced device_map (model parallelism)")
+            
+            # Apply optimizations
+            if ENABLE_VAE_TILING:
+                try:
+                    pipe.enable_vae_tiling()
+                    print(" VAE tiling enabled")
+                except:
+                    pass
+            
+            # Flash Attention
+            if ENABLE_FLASH_ATTENTION:
+                try:
+                    pipe.transformer.set_attention_backend("_flash_3")
+                    print(" Flash Attention 3 enabled")
+                except:
+                    try:
+                        pipe.transformer.set_attention_backend("flash")
+                        print(" Flash Attention 2 enabled")
+                    except:
+                        pass
+            
+            # LoRA loading
+            if LORA_ENABLED and LORA_CONFIGS:
+                print(f"\nLoading {len(LORA_CONFIGS)} LoRA(s)...")
+                loaded_loras = load_multiple_loras(pipe, LORA_CONFIGS)
+                if loaded_loras > 0:
+                    print(f"[OK] Successfully loaded {loaded_loras}/{len(LORA_CONFIGS)} LoRA(s)")
+            
+            # Warmup
+            print("\nWarming up multi-GPU model...")
+            try:
+                with torch.inference_mode():
+                    warmup_img = pipe(
+                        prompt="warmup",
+                        height=512,
+                        width=512,
+                        num_inference_steps=4,
+                        guidance_scale=0.0,
+                    ).images[0]
+                    del warmup_img
+                torch.cuda.empty_cache()
+                print(" Model warmed up and ready!")
+            except Exception as e:
+                print(f" Warmup failed (non-critical): {e}")
+            
+            print(f"\n[OK] Multi-GPU setup complete: Model split across {len(GPU_IDS)} GPUs")
         
         # ================================================================
         # Single GPU Loading (original logic)
@@ -1627,20 +1598,10 @@ async def generate_image_async(
     generation_start = time.time()
     queue_wait_ms = int((generation_start - queue_start_time) * 1000)
     
-    # Select pipeline (multi-GPU mode uses worker selection)
-    selected_worker = None
-    selected_pipe = pipe  # Default to global pipe
-    device = "cuda"
-    
-    if MULTI_GPU_ENABLED and gpu_workers:
-        selected_worker = get_best_gpu_worker()
-        if selected_worker:
-            selected_pipe = selected_worker.pipeline
-            device = f"cuda:{selected_worker.gpu_id}"
-            selected_worker.active_requests += 1
-            selected_worker.total_requests += 1
-            # Update per-GPU metrics
-            metrics.gpu_request_counts[selected_worker.gpu_id] = metrics.gpu_request_counts.get(selected_worker.gpu_id, 0) + 1
+    # Use global pipe (handles multi-GPU via device_map if enabled)
+    selected_pipe = pipe
+    selected_worker = None  # Not used with device_map approach
+    device = "cuda"  # device_map handles placement automatically
     
     try:
         # Generate random seed if not provided

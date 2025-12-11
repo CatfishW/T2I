@@ -90,7 +90,7 @@ model:
 multi_gpu:
   # Enable multi-GPU deployment (requires 2+ GPUs)
   # Each GPU runs an independent pipeline for maximum throughput
-  enabled: false
+  enabled: true
   
   # GPUs to use: "all" for all available GPUs, or a list like [0, 1, 2]
   gpus: "all"

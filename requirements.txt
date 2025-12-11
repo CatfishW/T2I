@@ -17,5 +17,5 @@ PyYAML>=6.0
 # Optional: Model Compilation (for faster inference)
 # Uncomment if you want to enable model compilation
 # Note: Triton installation can be complex and may require specific CUDA versions
-# triton>=2.0.0
+triton>=2.0.0
 
