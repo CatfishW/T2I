@@ -1171,208 +1171,246 @@ async def lifespan(app: FastAPI):
             model_path = MODEL_NAME
             use_local_only = False
         
-        print(f"Loading model from: {model_path}")
-        pipe = ZImagePipeline.from_pretrained(
-            model_path,
-            torch_dtype=TORCH_DTYPE,
-            low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
-            local_files_only=use_local_only,  # Only use local files if we found a local path
-        )
-        
-        # Memory optimization: CPU offloading (must be done before moving to CUDA)
-        if ENABLE_SEQUENTIAL_CPU_OFFLOAD:
-            pipe.enable_sequential_cpu_offload()
-            print(" Sequential CPU offloading enabled (most memory efficient)")
-        elif ENABLE_CPU_OFFLOAD:
-            pipe.enable_model_cpu_offload()
-            print(" CPU offloading enabled")
-        else:
-            pipe.to("cuda")
-            print(" Model loaded on CUDA")
-        
-        # Apply channels_last memory format for better GPU performance (5-15% speedup)
-        # This optimizes memory access patterns for convolutions on modern NVIDIA GPUs
-        if ENABLE_CHANNELS_LAST and not ENABLE_CPU_OFFLOAD and not ENABLE_SEQUENTIAL_CPU_OFFLOAD:
-            try:
-                # Apply to transformer if it has parameters
-                if hasattr(pipe, 'transformer') and pipe.transformer is not None:
-                    pipe.transformer = pipe.transformer.to(memory_format=torch.channels_last)
-                    print(" Channels-last memory format applied to transformer")
-                # Apply to VAE
-                if hasattr(pipe, 'vae') and pipe.vae is not None:
-                    pipe.vae = pipe.vae.to(memory_format=torch.channels_last)
-                    print(" Channels-last memory format applied to VAE")
-            except Exception as e:
-                print(f" Could not apply channels_last format: {e}")
-        
-        # VAE optimizations
-        if ENABLE_VAE_TILING:
-            try:
-                # VAE tiling is better than slicing for large images - more efficient
-                pipe.enable_vae_tiling()
-                print(" VAE tiling enabled (memory efficient for large images)")
-            except Exception as e:
-                # Fallback to slicing if tiling not available
-                if ENABLE_VAE_SLICING:
-                    try:
-                        pipe.enable_vae_slicing()
-                        print(" VAE slicing enabled (fallback)")
-                    except:
-                        print(f" VAE optimizations not available: {e}")
-                else:
-                    print(f" VAE tiling not available: {e}")
-        elif ENABLE_VAE_SLICING:
-            # Only use slicing if tiling is disabled
-            try:
-                pipe.enable_vae_slicing()
-                print(" VAE slicing enabled (reduces VRAM usage)")
-            except Exception as e:
-                print(f" VAE slicing not available: {e}")
-        
-        # Attention slicing - only enable if VRAM is constrained (slows down inference)
-        if ENABLE_ATTENTION_SLICING:
-            try:
-                # Use larger slice size for better speed (8 is good balance)
-                pipe.enable_attention_slicing(slice_size=8)
-                print(" Attention slicing enabled (slice_size=8 for speed)")
-            except Exception as e:
-                print(f" Attention slicing not available: {e}")
-        else:
-            print(" Attention slicing disabled (maximum speed mode)")
-        
-        # Load LoRA weights if configured
-        if LORA_ENABLED and LORA_CONFIGS:
-            print(f"\nLoading {len(LORA_CONFIGS)} LoRA(s)...")
-            loaded_loras = load_multiple_loras(pipe, LORA_CONFIGS)
-            if loaded_loras > 0:
-                print(f"[OK] Successfully loaded {loaded_loras}/{len(LORA_CONFIGS)} LoRA(s)")
-            else:
-                print("[WARNING] No LoRAs were loaded successfully")
-        elif LORA_ENABLED:
-            print("[INFO] LoRA loading enabled but no LoRAs configured")
-        
-        # Optional optimizations - Attention backend selection
-        if ENABLE_FLASH_ATTENTION and ENABLE_ATTENTION_BACKEND_OPTIMIZATION:
-            attention_backend_set = False
-            # Try multiple attention backends in order of preference (fastest first)
-            attention_backends = [
-                ("_flash_3", "Flash Attention 3"),
-                ("flash", "Flash Attention 2"),
-                ("_sdp", "Scaled Dot Product (SDP)"),
-                ("sdpa", "SDPA (PyTorch native)"),
-            ]
+        # ================================================================
+        # Multi-GPU Loading
+        # ================================================================
+        if MULTI_GPU_ENABLED and len(GPU_IDS) > 1:
+            print(f"\n{'='*60}")
+            print(f"MULTI-GPU MODE: Loading pipelines on {len(GPU_IDS)} GPUs")
+            print(f"{'='*60}")
             
-            for backend_name, backend_desc in attention_backends:
+            for gpu_id in GPU_IDS:
+                gpu_info = get_gpu_info(gpu_id)
+                print(f"\n Loading pipeline on GPU {gpu_id}: {gpu_info.get('name', 'Unknown')}")
+                
                 try:
-                    pipe.transformer.set_attention_backend(backend_name)
-                    print(f" {backend_desc} enabled")
-                    attention_backend_set = True
-                    break
+                    # Load pipeline on specific GPU
+                    device = f"cuda:{gpu_id}"
+                    
+                    gpu_pipe = ZImagePipeline.from_pretrained(
+                        model_path,
+                        torch_dtype=TORCH_DTYPE,
+                        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+                        local_files_only=use_local_only,
+                    )
+                    gpu_pipe.to(device)
+                    print(f"  Pipeline loaded on {device}")
+                    
+                    # Apply channels_last memory format
+                    if ENABLE_CHANNELS_LAST:
+                        try:
+                            if hasattr(gpu_pipe, 'transformer') and gpu_pipe.transformer is not None:
+                                gpu_pipe.transformer = gpu_pipe.transformer.to(memory_format=torch.channels_last)
+                            if hasattr(gpu_pipe, 'vae') and gpu_pipe.vae is not None:
+                                gpu_pipe.vae = gpu_pipe.vae.to(memory_format=torch.channels_last)
+                            print(f"  Channels-last format applied")
+                        except:
+                            pass
+                    
+                    # VAE optimizations
+                    if ENABLE_VAE_TILING:
+                        try:
+                            gpu_pipe.enable_vae_tiling()
+                            print(f"  VAE tiling enabled")
+                        except:
+                            pass
+                    
+                    # Flash Attention
+                    if ENABLE_FLASH_ATTENTION:
+                        try:
+                            gpu_pipe.transformer.set_attention_backend("_flash_3")
+                            print(f"  Flash Attention 3 enabled")
+                        except:
+                            try:
+                                gpu_pipe.transformer.set_attention_backend("flash")
+                                print(f"  Flash Attention 2 enabled")
+                            except:
+                                pass
+                    
+                    # LoRA loading for this GPU
+                    if LORA_ENABLED and LORA_CONFIGS:
+                        loaded = load_multiple_loras(gpu_pipe, LORA_CONFIGS)
+                        print(f"  LoRA(s) loaded: {loaded}")
+                    
+                    # Warmup this GPU
+                    print(f"  Warming up GPU {gpu_id}...")
+                    with torch.inference_mode():
+                        warmup_img = gpu_pipe(
+                            prompt="warmup",
+                            height=512,
+                            width=512,
+                            num_inference_steps=4,
+                            guidance_scale=0.0,
+                            generator=torch.Generator(device).manual_seed(0),
+                        ).images[0]
+                        del warmup_img
+                    torch.cuda.empty_cache()
+                    print(f"  GPU {gpu_id} ready!")
+                    
+                    # Create worker for this GPU
+                    worker = GPUWorker(
+                        gpu_id=gpu_id,
+                        pipeline=gpu_pipe,
+                        semaphore=asyncio.Semaphore(MAX_CONCURRENT_GENERATIONS),
+                        lock=asyncio.Lock(),
+                    )
+                    gpu_workers[gpu_id] = worker
+                    
                 except Exception as e:
+                    print(f"  [ERROR] Failed to load on GPU {gpu_id}: {e}")
                     continue
             
-            if not attention_backend_set:
-                print(" No optimized attention backend available, using default")
-        elif ENABLE_FLASH_ATTENTION:
-            # Simple fallback if optimization is disabled
-            try:
-                try:
-                    pipe.transformer.set_attention_backend("_flash_3")
-                    print(" Flash Attention 3 enabled")
-                except:
-                    pipe.transformer.set_attention_backend("flash")
-                    print(" Flash Attention 2 enabled")
-            except Exception as e:
-                print(f" Flash Attention not available: {e}")
+            # Set primary pipe to first worker's pipeline for backwards compatibility
+            if gpu_workers:
+                first_gpu = list(gpu_workers.keys())[0]
+                pipe = gpu_workers[first_gpu].pipeline
+                print(f"\n[OK] Multi-GPU setup complete: {len(gpu_workers)} GPUs active")
+            else:
+                raise RuntimeError("No GPUs successfully loaded for multi-GPU mode")
         
-        # Modern PyTorch 2.0+ compilation (torch.compile) - much faster than transformer.compile()
-        # Skip compilation on Windows (compatibility issues)
-        if IS_WINDOWS:
-            print("\n Skipping torch.compile (not supported on Windows)")
-            # Try torch.jit.script as alternative for Windows (works but less effective)
-            if ENABLE_TORCH_JIT and hasattr(torch.jit, 'script'):
-                print("  Attempting torch.jit.script as Windows-compatible alternative...")
-                try:
-                    # Note: torch.jit.script may not work with all transformer models
-                    # This is experimental and may fail, which is fine
-                    print("   torch.jit.script is experimental and may not work with all models")
-                    print("  Continuing without JIT compilation...")
-                except Exception as e:
-                    print(f"   torch.jit.script not applicable: {e}")
-            print("  Performance will still be excellent with Flash Attention and other optimizations")
-        elif ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
-            print(f"\nCompiling transformer with torch.compile (mode: {TORCH_COMPILE_MODE})...")
-            print("  This will take time on first run, but subsequent runs will be MUCH faster.")
-            try:
-                # Compile the transformer module for maximum speed
-                pipe.transformer = torch.compile(
-                    pipe.transformer,
-                    mode=TORCH_COMPILE_MODE,
-                    fullgraph=False,  # Allow graph breaks for flexibility
-                    dynamic=False,  # Static shapes for better optimization
-                )
-                print(" torch.compile() enabled - EXPECT SIGNIFICANT SPEEDUP!")
-            except Exception as e:
-                print(f" torch.compile() failed: {e}")
-                print("  Falling back to legacy compilation or no compilation...")
-                # Try legacy compilation as fallback
-                if ENABLE_COMPILATION:
-                    try:
-                        pipe.transformer.compile()
-                        print(" Legacy compilation enabled (fallback)")
-                    except Exception as e2:
-                        print(f" Legacy compilation also failed: {e2}")
-                        ENABLE_COMPILATION = False
-        elif ENABLE_COMPILATION:
-            # Legacy compilation (slower than torch.compile but still helps)
-            print("Compiling model with legacy method (first run will be slower)...")
-            try:
-                pipe.transformer.compile()
-                print(" Legacy model compilation enabled")
-            except Exception as e:
-                print(f" Model compilation failed: {e}")
-                print("  Continuing without compilation...")
-                ENABLE_COMPILATION = False
-        
-        # Warm up the model to trigger compilation and cache CUDA kernels
-        # (Compilation only happens on non-Windows systems)
-        if IS_WINDOWS:
-            print("\nWarming up model (CUDA kernel caching and memory allocation)...")
+        # ================================================================
+        # Single GPU Loading (original logic)
+        # ================================================================
         else:
-            print("\nWarming up model (triggers compilation and CUDA kernel caching)...")
-        try:
-            with torch.inference_mode():
-                # Pre-allocate CUDA memory and warm up kernels
-                # Use minimal settings for fast warmup
-                warmup_image = pipe(
-                    prompt="warmup test image",
-                    height=512,
-                    width=512,
-                    num_inference_steps=4,  # Minimal steps for warmup
-                    guidance_scale=0.0,
-                    generator=torch.Generator("cuda").manual_seed(0),
-                ).images[0]
+            print(f"Loading model from: {model_path}")
+            pipe = ZImagePipeline.from_pretrained(
+                model_path,
+                torch_dtype=TORCH_DTYPE,
+                low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+                local_files_only=use_local_only,
+            )
             
-            # Second warmup with target resolution for better caching (if different from 512)
-            # This helps cache kernels for common resolutions
+            # Memory optimization: CPU offloading (must be done before moving to CUDA)
+            if ENABLE_SEQUENTIAL_CPU_OFFLOAD:
+                pipe.enable_sequential_cpu_offload()
+                print(" Sequential CPU offloading enabled (most memory efficient)")
+            elif ENABLE_CPU_OFFLOAD:
+                pipe.enable_model_cpu_offload()
+                print(" CPU offloading enabled")
+            else:
+                pipe.to("cuda")
+                print(" Model loaded on CUDA")
+            
+            # Apply channels_last memory format for better GPU performance (5-15% speedup)
+            if ENABLE_CHANNELS_LAST and not ENABLE_CPU_OFFLOAD and not ENABLE_SEQUENTIAL_CPU_OFFLOAD:
+                try:
+                    if hasattr(pipe, 'transformer') and pipe.transformer is not None:
+                        pipe.transformer = pipe.transformer.to(memory_format=torch.channels_last)
+                        print(" Channels-last memory format applied to transformer")
+                    if hasattr(pipe, 'vae') and pipe.vae is not None:
+                        pipe.vae = pipe.vae.to(memory_format=torch.channels_last)
+                        print(" Channels-last memory format applied to VAE")
+                except Exception as e:
+                    print(f" Could not apply channels_last format: {e}")
+            
+            # VAE optimizations
+            if ENABLE_VAE_TILING:
+                try:
+                    pipe.enable_vae_tiling()
+                    print(" VAE tiling enabled (memory efficient for large images)")
+                except Exception as e:
+                    if ENABLE_VAE_SLICING:
+                        try:
+                            pipe.enable_vae_slicing()
+                            print(" VAE slicing enabled (fallback)")
+                        except:
+                            print(f" VAE optimizations not available: {e}")
+                    else:
+                        print(f" VAE tiling not available: {e}")
+            elif ENABLE_VAE_SLICING:
+                try:
+                    pipe.enable_vae_slicing()
+                    print(" VAE slicing enabled (reduces VRAM usage)")
+                except Exception as e:
+                    print(f" VAE slicing not available: {e}")
+            
+            # Attention slicing
+            if ENABLE_ATTENTION_SLICING:
+                try:
+                    pipe.enable_attention_slicing(slice_size=8)
+                    print(" Attention slicing enabled (slice_size=8 for speed)")
+                except Exception as e:
+                    print(f" Attention slicing not available: {e}")
+            else:
+                print(" Attention slicing disabled (maximum speed mode)")
+            
+            # Load LoRA weights if configured
+            if LORA_ENABLED and LORA_CONFIGS:
+                print(f"\nLoading {len(LORA_CONFIGS)} LoRA(s)...")
+                loaded_loras = load_multiple_loras(pipe, LORA_CONFIGS)
+                if loaded_loras > 0:
+                    print(f"[OK] Successfully loaded {loaded_loras}/{len(LORA_CONFIGS)} LoRA(s)")
+                else:
+                    print("[WARNING] No LoRAs were loaded successfully")
+            elif LORA_ENABLED:
+                print("[INFO] LoRA loading enabled but no LoRAs configured")
+            
+            # Flash Attention
+            if ENABLE_FLASH_ATTENTION and ENABLE_ATTENTION_BACKEND_OPTIMIZATION:
+                attention_backend_set = False
+                attention_backends = [
+                    ("_flash_3", "Flash Attention 3"),
+                    ("flash", "Flash Attention 2"),
+                    ("_sdp", "Scaled Dot Product (SDP)"),
+                    ("sdpa", "SDPA (PyTorch native)"),
+                ]
+                for backend_name, backend_desc in attention_backends:
+                    try:
+                        pipe.transformer.set_attention_backend(backend_name)
+                        print(f" {backend_desc} enabled")
+                        attention_backend_set = True
+                        break
+                    except:
+                        continue
+                if not attention_backend_set:
+                    print(" No optimized attention backend available, using default")
+            elif ENABLE_FLASH_ATTENTION:
+                try:
+                    try:
+                        pipe.transformer.set_attention_backend("_flash_3")
+                        print(" Flash Attention 3 enabled")
+                    except:
+                        pipe.transformer.set_attention_backend("flash")
+                        print(" Flash Attention 2 enabled")
+                except Exception as e:
+                    print(f" Flash Attention not available: {e}")
+            
+            # Torch compile (single GPU only for now)
+            if IS_WINDOWS:
+                print("\n Skipping torch.compile (not supported on Windows)")
+            elif ENABLE_TORCH_COMPILE and hasattr(torch, 'compile'):
+                print(f"\nCompiling transformer with torch.compile (mode: {TORCH_COMPILE_MODE})...")
+                try:
+                    pipe.transformer = torch.compile(
+                        pipe.transformer,
+                        mode=TORCH_COMPILE_MODE,
+                        fullgraph=False,
+                        dynamic=False,
+                    )
+                    print(" torch.compile() enabled")
+                except Exception as e:
+                    print(f" torch.compile() failed: {e}")
+            
+            # Warmup (single GPU)
+            if IS_WINDOWS:
+                print("\nWarming up model (CUDA kernel caching and memory allocation)...")
+            else:
+                print("\nWarming up model (triggers compilation and CUDA kernel caching)...")
             try:
-                warmup_image2 = pipe(
-                    prompt="warmup test image 1024",
-                    height=1024,
-                    width=1024,
-                    num_inference_steps=4,
-                    guidance_scale=0.0,
-                    generator=torch.Generator("cuda").manual_seed(1),
-                ).images[0]
-                del warmup_image2
-            except:
-                pass  # Second warmup is optional
-            
-            print(" Model warmed up and ready for fast inference!")
-            del warmup_image  # Free memory
-            torch.cuda.empty_cache()
-        except Exception as e:
-            print(f" Warmup failed (non-critical, will warmup on first request): {e}")
+                with torch.inference_mode():
+                    warmup_image = pipe(
+                        prompt="warmup test image",
+                        height=512,
+                        width=512,
+                        num_inference_steps=4,
+                        guidance_scale=0.0,
+                        generator=torch.Generator("cuda").manual_seed(0),
+                    ).images[0]
+                del warmup_image
+                torch.cuda.empty_cache()
+                print(" Model warmed up and ready for fast inference!")
+            except Exception as e:
+                print(f" Warmup failed (non-critical): {e}")
         
         print("\n" + "=" * 60)
         print("Server ready! Listening on http://0.0.0.0:8010")
@@ -1589,17 +1627,32 @@ async def generate_image_async(
     generation_start = time.time()
     queue_wait_ms = int((generation_start - queue_start_time) * 1000)
     
+    # Select pipeline (multi-GPU mode uses worker selection)
+    selected_worker = None
+    selected_pipe = pipe  # Default to global pipe
+    device = "cuda"
+    
+    if MULTI_GPU_ENABLED and gpu_workers:
+        selected_worker = get_best_gpu_worker()
+        if selected_worker:
+            selected_pipe = selected_worker.pipeline
+            device = f"cuda:{selected_worker.gpu_id}"
+            selected_worker.active_requests += 1
+            selected_worker.total_requests += 1
+            # Update per-GPU metrics
+            metrics.gpu_request_counts[selected_worker.gpu_id] = metrics.gpu_request_counts.get(selected_worker.gpu_id, 0) + 1
+    
     try:
         # Generate random seed if not provided
         if seed < 0:
             # Use faster random generation on CUDA if available
             if torch.cuda.is_available():
-                seed = torch.randint(0, 2**32 - 1, (1,), device="cuda").item()
+                seed = torch.randint(0, 2**32 - 1, (1,), device=device).item()
             else:
                 seed = torch.randint(0, 2**32 - 1, (1,)).item()
         
-        # Create generator on CUDA for faster operations
-        generator = torch.Generator("cuda" if torch.cuda.is_available() else "cpu")
+        # Create generator on correct GPU device
+        generator = torch.Generator(device if torch.cuda.is_available() else "cpu")
         generator.manual_seed(seed)
         
         # Run generation in thread pool to avoid blocking event loop
@@ -1649,14 +1702,14 @@ async def generate_image_async(
                         try:
                             gen_kwargs["callback"] = callback
                             gen_kwargs["callback_steps"] = 1
-                            return pipe(**gen_kwargs).images[0]
+                            return selected_pipe(**gen_kwargs).images[0]
                         except TypeError:
                             # If callback parameter is not supported, fall back to no callback
                             gen_kwargs.pop("callback", None)
                             gen_kwargs.pop("callback_steps", None)
-                            return pipe(**gen_kwargs).images[0]
+                            return selected_pipe(**gen_kwargs).images[0]
                     else:
-                        return pipe(**gen_kwargs).images[0]
+                        return selected_pipe(**gen_kwargs).images[0]
                 except Exception as e:
                     # If compilation error occurs during generation
                     error_str = str(e).lower()
@@ -1748,6 +1801,9 @@ async def generate_image_async(
         metrics.failed_generations += 1
         raise e
     finally:
+        # Decrement worker active requests in multi-GPU mode
+        if selected_worker is not None:
+            selected_worker.active_requests = max(0, selected_worker.active_requests - 1)
         # Don't clear CUDA cache aggressively - it slows down subsequent generations
         # Only clear if we're running low on memory
         # torch.cuda.empty_cache()  # Commented out for speed - cache helps with repeated operations
