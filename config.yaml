@@ -95,6 +95,11 @@ multi_gpu:
   # GPUs to use: "all" for all available GPUs, or a list like [0, 1, 2]
   gpus: "all"
   
+  # Use CPU offload mode (recommended when other processes are using GPU memory)
+  # - true: Model weights stay in CPU RAM, move to GPU only when needed (slower but memory efficient)
+  # - false: Load full model on GPU (faster but requires more GPU memory)
+  use_cpu_offload: true
+  
   # Load balancing strategy for distributing requests across GPUs:
   # - "round_robin": Simple rotation through GPUs
   # - "least_busy": Route to GPU with fewest pending requests (recommended)

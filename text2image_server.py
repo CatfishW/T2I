@@ -963,6 +963,7 @@ ENABLE_CHANNELS_LAST = config["model"].get("enable_channels_last", True)
 MULTI_GPU_ENABLED = config.get("multi_gpu", {}).get("enabled", False) and NUM_GPUS > 1
 MULTI_GPU_DEVICES = config.get("multi_gpu", {}).get("gpus", "all")
 LOAD_BALANCING_STRATEGY = config.get("multi_gpu", {}).get("load_balancing", "least_busy")
+USE_CPU_OFFLOAD = config.get("multi_gpu", {}).get("use_cpu_offload", True)
 
 # Resolve GPU list
 if MULTI_GPU_ENABLED:
@@ -1172,15 +1173,11 @@ async def lifespan(app: FastAPI):
             use_local_only = False
         
         # ================================================================
-        # Multi-GPU Loading (CPU Offload for memory efficiency)
+        # Multi-GPU Loading (configurable CPU offload)
         # ================================================================
-        # NOTE: Manual component placement across GPUs doesn't work because
-        # diffusers pipelines need intermediate tensors to flow between
-        # components on the same device. CPU offload mode is the only
-        # reliable way to use limited GPU memory efficiently.
         if MULTI_GPU_ENABLED and len(GPU_IDS) > 1:
             print(f"\n{'='*60}")
-            print(f"MULTI-GPU MODE: Using CPU offload for memory efficiency")
+            print(f"MULTI-GPU MODE: CPU Offload = {USE_CPU_OFFLOAD}")
             print(f"{'='*60}")
             
             # Check available memory on each GPU
@@ -1203,19 +1200,34 @@ async def lifespan(app: FastAPI):
             best_gpu = max(gpu_free_memory, key=gpu_free_memory.get)
             best_gpu_free = gpu_free_memory[best_gpu]
             
-            print(f"\n  Using GPU {best_gpu} ({best_gpu_free:.1f} GB free) with CPU offload")
-            print(f"  Components will be moved to GPU only when needed")
-            
-            # Load with CPU offload mode
-            print(f"\nLoading model with CPU offload...")
-            pipe = ZImagePipeline.from_pretrained(
-                model_path,
-                torch_dtype=TORCH_DTYPE,
-                low_cpu_mem_usage=True,
-                local_files_only=use_local_only,
-            )
-            pipe.enable_model_cpu_offload(gpu_id=best_gpu)
-            print(f"  Model loaded with CPU offload on GPU {best_gpu}")
+            if USE_CPU_OFFLOAD:
+                # CPU Offload mode: slower but memory efficient
+                print(f"\n  Using GPU {best_gpu} ({best_gpu_free:.1f} GB free) with CPU offload")
+                print(f"  Components will be moved to GPU only when needed")
+                
+                print(f"\nLoading model with CPU offload...")
+                pipe = ZImagePipeline.from_pretrained(
+                    model_path,
+                    torch_dtype=TORCH_DTYPE,
+                    low_cpu_mem_usage=True,
+                    local_files_only=use_local_only,
+                )
+                pipe.enable_model_cpu_offload(gpu_id=best_gpu)
+                print(f"  Model loaded with CPU offload on GPU {best_gpu}")
+            else:
+                # Direct GPU mode: faster but needs more VRAM
+                print(f"\n  Loading model directly on GPU {best_gpu} ({best_gpu_free:.1f} GB free)")
+                print(f"  Requires full model to fit in GPU memory")
+                
+                print(f"\nLoading model on GPU {best_gpu}...")
+                pipe = ZImagePipeline.from_pretrained(
+                    model_path,
+                    torch_dtype=TORCH_DTYPE,
+                    low_cpu_mem_usage=True,
+                    local_files_only=use_local_only,
+                )
+                pipe.to(f"cuda:{best_gpu}")
+                print(f"  Model loaded on cuda:{best_gpu}")
             
             # Apply optimizations
             if ENABLE_VAE_TILING:
