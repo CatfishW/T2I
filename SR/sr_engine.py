@@ -127,9 +127,16 @@ class SuperResolutionEngine:
         onnx_name = config.get("onnx_name", config["filename"])
         model_path = MODELS_DIR / onnx_name
         
+        # Check if model already exists (including in subdirectories)
         if model_path.exists():
             logger.info(f"Model already exists: {model_path}")
             return model_path
+        
+        # Also check subdirectories (Qualcomm models extract to job_*/model.onnx)
+        existing_onnx = list(MODELS_DIR.glob("**/*.onnx"))
+        if existing_onnx:
+            logger.info(f"Model already exists: {existing_onnx[0]}")
+            return existing_onnx[0]
         
         logger.info(f"Downloading model from HuggingFace: {config['repo_id']}")
         
@@ -155,7 +162,6 @@ class SuperResolutionEngine:
             
             if not model_path.exists():
                 # Check if file was extracted to a subdirectory
-                # Qualcomm models extract to job_*/model.onnx structure
                 onnx_files = list(MODELS_DIR.glob("**/*.onnx"))
                 if onnx_files:
                     model_path = onnx_files[0]
