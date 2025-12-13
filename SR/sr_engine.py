@@ -337,55 +337,81 @@ class SuperResolutionEngine:
     
     def _upscale_tiles(self, image: np.ndarray) -> np.ndarray:
         """
-        Upscale a large image using tile-based processing.
+        Upscale a large image using tile-based processing with overlap blending.
         
-        This avoids GPU OOM for high-resolution images.
+        Uses overlapping tiles with gradient blending to eliminate visible seams.
         """
         h, w = image.shape[:2]
         scale = self.scale
         tile_size = self.tile_size
-        tile_pad = self.tile_pad
         
-        # Create output image
+        # Use overlap of 1/4 tile size for smooth blending
+        overlap = tile_size // 4
+        step = tile_size - overlap
+        
+        # Create output image as float for blending
         output_h = h * scale
         output_w = w * scale
-        output = np.zeros((output_h, output_w, 3), dtype=np.uint8)
+        output = np.zeros((output_h, output_w, 3), dtype=np.float32)
+        weight_map = np.zeros((output_h, output_w, 1), dtype=np.float32)
         
-        # Calculate number of tiles
-        tiles_x = (w + tile_size - 1) // tile_size
-        tiles_y = (h + tile_size - 1) // tile_size
+        # Create blending weights (raised cosine window for smooth transitions)
+        def create_blend_weights(size):
+            """Create 2D raised cosine blend weights."""
+            x = np.linspace(0, 1, size)
+            # Raised cosine: smooth transition from 0 to 1 to 0
+            blend_1d = np.where(x < 0.5, 
+                               0.5 * (1 - np.cos(2 * np.pi * x)),
+                               0.5 * (1 + np.cos(2 * np.pi * (x - 0.5))))
+            # Create 2D weights
+            blend_2d = np.outer(blend_1d, blend_1d)
+            return blend_2d[:, :, np.newaxis].astype(np.float32)
         
-        logger.info(f"Processing {tiles_x * tiles_y} tiles ({tiles_x}x{tiles_y})")
+        # Calculate number of tiles with overlap
+        tiles_x = max(1, (w - overlap + step - 1) // step)
+        tiles_y = max(1, (h - overlap + step - 1) // step)
         
-        for y in range(tiles_y):
-            for x in range(tiles_x):
-                # Calculate tile boundaries
-                x1 = x * tile_size
-                y1 = y * tile_size
+        logger.info(f"Processing {tiles_x * tiles_y} tiles ({tiles_x}x{tiles_y}) with overlap blending")
+        
+        for y_idx in range(tiles_y):
+            for x_idx in range(tiles_x):
+                # Calculate tile position in input
+                x1 = x_idx * step
+                y1 = y_idx * step
                 x2 = min(x1 + tile_size, w)
                 y2 = min(y1 + tile_size, h)
                 
-                # Add padding
-                x1_pad = max(x1 - tile_pad, 0)
-                y1_pad = max(y1 - tile_pad, 0)
-                x2_pad = min(x2 + tile_pad, w)
-                y2_pad = min(y2 + tile_pad, h)
-                
-                # Extract tile with padding
-                tile = image[y1_pad:y2_pad, x1_pad:x2_pad]
+                # Extract tile
+                tile = image[y1:y2, x1:x2]
+                actual_h, actual_w = tile.shape[:2]
                 
                 # Upscale tile
                 tile_output = self._upscale_single(tile)
+                tile_output_float = tile_output.astype(np.float32)
                 
-                # Calculate output boundaries (excluding padding)
-                out_x1 = (x1 - x1_pad) * scale
-                out_y1 = (y1 - y1_pad) * scale
-                out_x2 = out_x1 + (x2 - x1) * scale
-                out_y2 = out_y1 + (y2 - y1) * scale
+                # Create weights for this tile
+                out_h, out_w = tile_output.shape[:2]
+                weights = create_blend_weights(tile_size * scale)
                 
-                # Place tile in output (excluding padding)
-                output[y1 * scale:y2 * scale, x1 * scale:x2 * scale] = \
-                    tile_output[out_y1:out_y2, out_x1:out_x2]
+                # Crop weights to actual output tile size
+                weights = weights[:out_h, :out_w]
+                
+                # Calculate output position
+                out_x1 = x1 * scale
+                out_y1 = y1 * scale
+                out_x2 = out_x1 + out_w
+                out_y2 = out_y1 + out_h
+                
+                # Accumulate weighted tile
+                output[out_y1:out_y2, out_x1:out_x2] += tile_output_float * weights
+                weight_map[out_y1:out_y2, out_x1:out_x2] += weights
+        
+        # Normalize by weights
+        weight_map = np.maximum(weight_map, 1e-8)  # Avoid division by zero
+        output = output / weight_map
+        
+        # Convert back to uint8
+        output = np.clip(output, 0, 255).astype(np.uint8)
         
         return output
     
